@@ -90,6 +90,7 @@ typedef struct Exynos4210State {
     qemu_irq *irq_table;
 
     MemoryRegion chipid_mem;
+    MemoryRegion wdt_mem;
     MemoryRegion iram_mem;
     MemoryRegion irom_mem;
     MemoryRegion irom_alias_mem;

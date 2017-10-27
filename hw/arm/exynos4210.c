@@ -36,7 +36,12 @@
 #include "hw/sd/sd.h"
 #include "hw/usb/hcd-ehci.h"
 
+#include "qemu/error-report.h" // for debug
+
 #define EXYNOS4210_CHIPID_ADDR         0x10000000
+
+/* WDT */
+#define EXYNOS4210_WDT_BASE_ADDR       0x10060000
 
 /* PWM */
 #define EXYNOS4210_PWM_BASE_ADDR       0x139D0000
@@ -98,6 +103,71 @@
 
 static uint8_t chipid_and_omr[] = { 0x11, 0x02, 0x21, 0x43,
                                     0x09, 0x00, 0x00, 0x00 };
+
+
+static uint32_t exynos4_wdt_mem_readb(void *vp, hwaddr addr)
+{
+    error_report("addr = %x\n", (int) addr);
+    return 0;
+}
+
+static uint32_t exynos4_wdt_mem_readw(void *vp, hwaddr addr)
+{
+    // Exynos4210State *s = vp;
+    error_report("addr = %x\n", (int) addr);
+    return 0;
+}
+
+static uint32_t exynos4_wdt_mem_readl(void *vp, hwaddr addr)
+{
+    error_report("addr = %x\n", (int) addr);
+    return 0;
+}
+
+static void exynos4_wdt_mem_writeb(void *vp, hwaddr addr, uint32_t val)
+{
+    // Exynos4210State *s = vp;
+    error_report("addr = %x, val = %x\n", (int) addr, val);
+}
+
+static void exynos4_wdt_mem_writew(void *vp, hwaddr addr, uint32_t val)
+{
+    // Exynos4210State *s = vp;
+    error_report("addr = %x, val = %x\n", (int) addr, val);
+}
+
+static void exynos4_wdt_mem_writel(void *vp, hwaddr addr, uint32_t val)
+{
+    // Exynos4210State *s = vp;
+    error_report("addr = %x, val = %x\n", (int) addr, val);
+}
+
+static const MemoryRegionOps exynos4210_wdt_ops = {
+    .old_mmio = {
+        .read = {
+            exynos4_wdt_mem_readb,
+            exynos4_wdt_mem_readw,
+            exynos4_wdt_mem_readl,
+        },
+        .write = {
+            exynos4_wdt_mem_writeb,
+            exynos4_wdt_mem_writew,
+            exynos4_wdt_mem_writel,
+        },
+    },
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+
+/*
+static void exynos4_wdt_timeout_checker()
+{
+	// error_report("addr = %x, val = %x\n", (int) addr, val);
+	// void qapi_event_send_reset(bool guest, Error **errp);
+    // qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+}
+*/
+
 
 static uint64_t exynos4210_chipid_and_omr_read(void *opaque, hwaddr offset,
                                                unsigned size)
@@ -277,6 +347,12 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem)
         NULL, "exynos4210.chipid", sizeof(chipid_and_omr));
     memory_region_add_subregion(system_mem, EXYNOS4210_CHIPID_ADDR,
                                 &s->chipid_mem);
+
+    /* Watchdog timer */
+    memory_region_init_io(&s->wdt_mem, NULL, &exynos4210_wdt_ops, s,
+    		"exynos4210.wdt", 0x15);
+    memory_region_add_subregion(system_mem, EXYNOS4210_WDT_BASE_ADDR,
+                                &s->wdt_mem);
 
     /* Internal ROM */
     memory_region_init_ram(&s->irom_mem, NULL, "exynos4210.irom",
