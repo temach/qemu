@@ -37,6 +37,7 @@
 #include "hw/usb/hcd-ehci.h"
 
 #include "qemu/error-report.h" // for debug
+#include "qapi-event.h"
 
 #define EXYNOS4210_CHIPID_ADDR         0x10000000
 
@@ -104,58 +105,86 @@
 static uint8_t chipid_and_omr[] = { 0x11, 0x02, 0x21, 0x43,
                                     0x09, 0x00, 0x00, 0x00 };
 
+static uint16_t wdt_mem[]    =    { 0x0000, 0x8021,
+                                    0x0000, 0x8000,
+                                    0x0000, 0x8000,
+                                    0x0000, 0x0000 };
 
-static uint32_t exynos4_wdt_mem_readb(void *vp, hwaddr addr)
+/* This function is called when the watchdog has either been enabled
+ * (hence it starts counting down) or has been keep-alived.
+ */
+static void wdt_restart_timer(Exynos4210State *s)
 {
-    error_report("addr = %x\n", (int) addr);
-    return 0;
+    int64_t timeout;
+
+    if (!d->enabled)
+        return;
+
+    d->stage = stage;
+
+    if (d->stage <= 1)
+        timeout = d->timer1_preload;
+    else
+        timeout = d->timer2_preload;
+
+    if (d->clock_scale == CLOCK_SCALE_1KHZ)
+        timeout <<= 15;
+    else
+        timeout <<= 5;
+
+    /* Get the timeout in nanoseconds. */
+
+    timeout = timeout * 30; /* on a PCI bus, 1 tick is 30 ns*/
+
+    error_report("wdt timeout %" "\n", timeout);
+    error_report("wdt timeout %x", (uint) timeout);
+
+    timer_mod(d->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + timeout);
+    // timeout_new_ns function
 }
 
-static uint32_t exynos4_wdt_mem_readw(void *vp, hwaddr addr)
+static uint32_t exynos4_wdt_mem_readl(void *vp, hwaddr offset)
+{
+    assert(offset < sizeof(wdt_mem));
+    error_report("rl offset = %x, read = %x\n", (int) offset, (int) wdt_mem[offset]);
+    return wdt_mem[offset];
+}
+
+static void exynos4_wdt_mem_writel(void *vp, hwaddr offset, uint32_t val)
 {
     // Exynos4210State *s = vp;
-    error_report("addr = %x\n", (int) addr);
-    return 0;
-}
+    assert(offset < sizeof(wdt_mem));
+    error_report("wl offset = %x, write = %x\n", (int) offset, val);
+    wdt_mem[offset] = val;
 
-static uint32_t exynos4_wdt_mem_readl(void *vp, hwaddr addr)
-{
-    error_report("addr = %x\n", (int) addr);
-    return 0;
-}
-
-static void exynos4_wdt_mem_writeb(void *vp, hwaddr addr, uint32_t val)
-{
-    // Exynos4210State *s = vp;
-    error_report("addr = %x, val = %x\n", (int) addr, val);
-}
-
-static void exynos4_wdt_mem_writew(void *vp, hwaddr addr, uint32_t val)
-{
-    // Exynos4210State *s = vp;
-    error_report("addr = %x, val = %x\n", (int) addr, val);
-}
-
-static void exynos4_wdt_mem_writel(void *vp, hwaddr addr, uint32_t val)
-{
-    // Exynos4210State *s = vp;
-    error_report("addr = %x, val = %x\n", (int) addr, val);
+    // check for events
+    if (wdt_mem[3]) {
+    	wdt_mem[2] = wdt_mem[1];
+    }
+    if (wdt_mem[0] & 0x0020 && ! wdt_mem[2]) {
+    	// reset the machine
+        qapi_event_send_watchdog(WATCHDOG_EXPIRATION_ACTION_RESET, &error_abort);
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
 }
 
 static const MemoryRegionOps exynos4210_wdt_ops = {
-    .old_mmio = {
-        .read = {
-            exynos4_wdt_mem_readb,
-            exynos4_wdt_mem_readw,
-            exynos4_wdt_mem_readl,
-        },
-        .write = {
-            exynos4_wdt_mem_writeb,
-            exynos4_wdt_mem_writew,
-            exynos4_wdt_mem_writel,
-        },
-    },
+	.old_mmio = {
+		.read = {
+			exynos4_wdt_mem_readl,
+			exynos4_wdt_mem_readl,
+			exynos4_wdt_mem_readl,
+		},
+		.write = {
+			exynos4_wdt_mem_writel,
+			exynos4_wdt_mem_writel,
+			exynos4_wdt_mem_writel,
+		},
+	},
     .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl = {
+        .min_access_size = 4,
+    }
 };
 
 
@@ -350,7 +379,7 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem)
 
     /* Watchdog timer */
     memory_region_init_io(&s->wdt_mem, NULL, &exynos4210_wdt_ops, s,
-    		"exynos4210.wdt", 0x15);
+    		"exynos4210.wdt", sizeof(wdt_mem));
     memory_region_add_subregion(system_mem, EXYNOS4210_WDT_BASE_ADDR,
                                 &s->wdt_mem);
 
