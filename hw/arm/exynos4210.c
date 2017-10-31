@@ -102,70 +102,93 @@
 /* EHCI */
 #define EXYNOS4210_EHCI_BASE_ADDR           0x12580000
 
+/* Watchdog */
+#define EXYNOS4210_WTCON_RSTEN	(1 << 0)
+#define EXYNOS4210_WTCON_INTEN	(1 << 2)
+#define EXYNOS4210_WTCON_ENABLE	(1 << 5)
+
+#define EXYNOS4210_WTCON_DIV16	(0 << 3)
+#define EXYNOS4210_WTCON_DIV32	(1 << 3)
+#define EXYNOS4210_WTCON_DIV64	(2 << 3)
+#define EXYNOS4210_WTCON_DIV128	(3 << 3)
+
+#define EXYNOS4210_WTCON	(0)
+#define EXYNOS4210_WTDAT	(1)
+#define EXYNOS4210_WTCNT	(2)
+#define EXYNOS4210_WTCLRINT	(3)
+
 static uint8_t chipid_and_omr[] = { 0x11, 0x02, 0x21, 0x43,
                                     0x09, 0x00, 0x00, 0x00 };
 
-static uint16_t wdt_mem[]    =    { 0x0000, 0x8021,
-                                    0x0000, 0x8000,
-                                    0x0000, 0x8000,
-                                    0x0000, 0x0000 };
+static uint32_t wdt_mem[]    =    { 0x00008021,
+                                    0x00008000,
+                                    0x00008000,
+                                    0x00000000 };
 
 /* This function is called when the watchdog has either been enabled
  * (hence it starts counting down) or has been keep-alived.
  */
-static void wdt_restart_timer(Exynos4210State *s)
+static void wdt_restart_timer(void *opaque_nullptr)
 {
-    int64_t timeout;
-
-    if (!d->enabled)
-        return;
-
-    d->stage = stage;
-
-    if (d->stage <= 1)
-        timeout = d->timer1_preload;
-    else
-        timeout = d->timer2_preload;
-
-    if (d->clock_scale == CLOCK_SCALE_1KHZ)
-        timeout <<= 15;
-    else
-        timeout <<= 5;
-
-    /* Get the timeout in nanoseconds. */
-
-    timeout = timeout * 30; /* on a PCI bus, 1 tick is 30 ns*/
-
-    error_report("wdt timeout %" "\n", timeout);
-    error_report("wdt timeout %x", (uint) timeout);
-
-    timer_mod(d->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + timeout);
-    // timeout_new_ns function
+    error_report("now in wdt callback");
+    if (wdt_mem[0] & 0x0020 && ! wdt_mem[2]) {
+    	// reset the machine
+		error_report("resetting machine");
+        // qapi_event_send_watchdog(WATCHDOG_EXPIRATION_ACTION_RESET, &error_abort);
+        // qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+//    int64_t timeout;
+//
+//    if (!d->enabled)
+//        return;
+//
+//    d->stage = stage;
+//
+//    if (d->stage <= 1)
+//        timeout = d->timer1_preload;
+//    else
+//        timeout = d->timer2_preload;
+//
+//    if (d->clock_scale == CLOCK_SCALE_1KHZ)
+//        timeout <<= 15;
+//    else
+//        timeout <<= 5;
+//
+//    /* Get the timeout in nanoseconds. */
+//
+//    timeout = timeout * 30; /* on a PCI bus, 1 tick is 30 ns*/
+//
+//    error_report("wdt timeout %" "\n", timeout);
+//    error_report("wdt timeout %x", (uint) timeout);
+//
+//    timer_mod(d->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + timeout);
+//    // timeout_new_ns function
 }
 
 static uint32_t exynos4_wdt_mem_readl(void *vp, hwaddr offset)
 {
-    assert(offset < sizeof(wdt_mem));
+    assert(offset < sizeof(wdt_mem)*4);
     error_report("rl offset = %x, read = %x\n", (int) offset, (int) wdt_mem[offset]);
-    return wdt_mem[offset];
+    return wdt_mem[offset / 4];
 }
 
 static void exynos4_wdt_mem_writel(void *vp, hwaddr offset, uint32_t val)
 {
     // Exynos4210State *s = vp;
-    assert(offset < sizeof(wdt_mem));
+    assert(offset < sizeof(wdt_mem)*4);
     error_report("wl offset = %x, write = %x\n", (int) offset, val);
-    wdt_mem[offset] = val;
 
-    // check for events
-    if (wdt_mem[3]) {
+    if (offset == 0 && val & EXYNOS4210_WTCON_ENABLE) {
+    	// enabling the wdt
+    	// arm initial count
     	wdt_mem[2] = wdt_mem[1];
+    	// set timer ticking
+    	uint64_t expire_time_ns = 500000000; 	// 500 milliseconds
+    	QEMUTimer *timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, wdt_restart_timer, NULL);
+    	timer_mod_ns(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + expire_time_ns);
     }
-    if (wdt_mem[0] & 0x0020 && ! wdt_mem[2]) {
-    	// reset the machine
-        qapi_event_send_watchdog(WATCHDOG_EXPIRATION_ACTION_RESET, &error_abort);
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-    }
+
+    wdt_mem[offset / 4] = val;
 }
 
 static const MemoryRegionOps exynos4210_wdt_ops = {
