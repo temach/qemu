@@ -401,10 +401,10 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem)
                                 &s->chipid_mem);
 
     /* Watchdog timer */
-    memory_region_init_io(&s->wdt_mem, NULL, &exynos4210_wdt_ops, s,
-    		"exynos4210.wdt", sizeof(wdt_mem));
-    memory_region_add_subregion(system_mem, EXYNOS4210_WDT_BASE_ADDR,
-                                &s->wdt_mem);
+//    memory_region_init_io(&s->wdt_mem, NULL, &exynos4210_wdt_ops, s,
+//    		"exynos4210.wdt", sizeof(wdt_mem));
+//    memory_region_add_subregion(system_mem, EXYNOS4210_WDT_BASE_ADDR,
+//                                &s->wdt_mem);
 
     /* Internal ROM */
     memory_region_init_ram(&s->irom_mem, NULL, "exynos4210.irom",
@@ -448,6 +448,10 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem)
     sysbus_create_varargs("exynos4210.rtc", EXYNOS4210_RTC_BASE_ADDR,
                           s->irq_table[exynos4210_get_irq(23, 0)],
                           s->irq_table[exynos4210_get_irq(23, 1)],
+                          NULL);
+    /* WDT */
+    sysbus_create_varargs("exynos4210.wdt", EXYNOS4210_WDT_BASE_ADDR,
+                          s->irq_table[exynos4210_get_irq(19, 0)],
                           NULL);
 
     /* Multi Core Timer */

@@ -118,8 +118,10 @@ enum ExtInt {
 
 static const uint32_t
 combiner_grp_to_gic_id[64-EXYNOS4210_MAX_EXT_COMBINER_OUT_IRQ][8] = {
-    /* int combiner groups 16-19 */
-    { }, { }, { }, { },
+    /* int combiner groups 16-18 */
+    { }, { }, { },
+    /* int combiner group 19 */
+    { EXT_GIC_ID_WDT },
     /* int combiner group 20 */
     { 0, EXT_GIC_ID_MDMA_LCD0 },
     /* int combiner group 21 */
