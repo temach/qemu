@@ -161,13 +161,7 @@ static const VMStateDescription vmstate_exynos4210_wdt_state = {
  */
 static void exynos4210_wdt_update_freq(Exynos4210WDTState *s, uint32_t id)
 {
-    uint32_t freq;
-    freq = s->timer.freq;
-	s->timer.freq = 24000000 / ((GET_PRESCALER(s->reg_wtcon) + 1) * (GET_DIVIDER(s->reg_wtcon)));
-    if (freq != s->timer.freq) {
-        ptimer_set_freq(s->timer.ptimer, s->timer.freq);
-        DPRINTF("freq=%dHz\n", s->timer.freq);
-    }
+    DPRINTF("wdt update freq\n");
 }
 
 /*
@@ -175,39 +169,7 @@ static void exynos4210_wdt_update_freq(Exynos4210WDTState *s, uint32_t id)
  */
 static void exynos4210_wdt_tick(void *opaque)
 {
-    Exynos4210WDT *s = (Exynos4210WDT *)opaque;
-    Exynos4210WDTState *p = (Exynos4210WDTState *)s->parent;
-    uint32_t id = s->id;
-    bool cmp;
-
-    DPRINTF("timer %d tick\n", id);
-
-    /* set irq status */
-    p->reg_tint_cstat |= TINT_CSTAT_STATUS(id);
-
-    /* raise IRQ */
-    if (p->reg_tint_cstat & TINT_CSTAT_ENABLE(id)) {
-        DPRINTF("timer %d IRQ\n", id);
-        qemu_irq_raise(p->timer.irq);
-    }
-
-    /* reload timer */
-    if (id != 4) {
-        cmp = p->reg_tcon & TCON_TIMER_AUTO_RELOAD(id);
-    } else {
-        cmp = p->reg_tcon & TCON_TIMER4_AUTO_RELOAD;
-    }
-
-    if (cmp) {
-        DPRINTF("auto reload timer %d count to %x\n", id,
-                p->timer.reg_tcntb);
-        ptimer_set_count(p->timer.ptimer, p->timer.reg_tcntb);
-        ptimer_run(p->timer.ptimer, 1);
-    } else {
-        /* stop timer, set status to STOP, see Basic Timer Operation */
-        p->reg_tcon &= ~TCON_TIMER_START(id);
-        ptimer_stop(p->timer.ptimer);
-    }
+    DPRINTF("wdt_tick\n");
 }
 
 /*
@@ -350,17 +312,7 @@ static void exynos4210_wdt_write(void *opaque, hwaddr offset,
  */
 static void exynos4210_wdt_reset(DeviceState *d)
 {
-    Exynos4210WDTState *s = EXYNOS4210_WDT(d);
-    int i;
-    s->reg_tcfg[0] = 0x0101;
-    s->reg_tcfg[1] = 0x0;
-    s->reg_tcon = 0;
-    s->reg_tint_cstat = 0;
-	s->timer.reg_tcmpb = 0;
-	s->timer.reg_tcntb = 0;
-
-	exynos4210_wdt_update_freq(s, s->timer.id);
-	ptimer_stop(s->timer.ptimer);
+    DPRINTF("wdt reset\n");
 }
 
 static const MemoryRegionOps exynos4210_wdt_ops = {
