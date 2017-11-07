@@ -36,9 +36,6 @@
 #include "hw/sd/sd.h"
 #include "hw/usb/hcd-ehci.h"
 
-#include "qemu/error-report.h" // for debug
-#include "qapi-event.h"
-
 #define EXYNOS4210_CHIPID_ADDR         0x10000000
 
 /* WDT */
@@ -102,123 +99,9 @@
 /* EHCI */
 #define EXYNOS4210_EHCI_BASE_ADDR           0x12580000
 
-/* Watchdog */
-#define EXYNOS4210_WTCON_RSTEN	(1 << 0)
-#define EXYNOS4210_WTCON_INTEN	(1 << 2)
-#define EXYNOS4210_WTCON_ENABLE	(1 << 5)
-
-#define EXYNOS4210_WTCON_DIV16	(0 << 3)
-#define EXYNOS4210_WTCON_DIV32	(1 << 3)
-#define EXYNOS4210_WTCON_DIV64	(2 << 3)
-#define EXYNOS4210_WTCON_DIV128	(3 << 3)
-
-#define EXYNOS4210_WTCON	(0)
-#define EXYNOS4210_WTDAT	(1)
-#define EXYNOS4210_WTCNT	(2)
-#define EXYNOS4210_WTCLRINT	(3)
-
 static uint8_t chipid_and_omr[] = { 0x11, 0x02, 0x21, 0x43,
                                     0x09, 0x00, 0x00, 0x00 };
 
-static uint32_t wdt_mem[]    =    { 0x00008021,
-                                    0x00008000,
-                                    0x00008000,
-                                    0x00000000 };
-
-/* This function is called when the watchdog has either been enabled
- * (hence it starts counting down) or has been keep-alived.
- */
-static void wdt_restart_timer(void *opaque_nullptr)
-{
-    error_report("now in wdt callback");
-    if (wdt_mem[0] & 0x0020 && ! wdt_mem[2]) {
-    	// reset the machine
-		error_report("resetting machine");
-        // qapi_event_send_watchdog(WATCHDOG_EXPIRATION_ACTION_RESET, &error_abort);
-        // qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-    }
-//    int64_t timeout;
-//
-//    if (!d->enabled)
-//        return;
-//
-//    d->stage = stage;
-//
-//    if (d->stage <= 1)
-//        timeout = d->timer1_preload;
-//    else
-//        timeout = d->timer2_preload;
-//
-//    if (d->clock_scale == CLOCK_SCALE_1KHZ)
-//        timeout <<= 15;
-//    else
-//        timeout <<= 5;
-//
-//    /* Get the timeout in nanoseconds. */
-//
-//    timeout = timeout * 30; /* on a PCI bus, 1 tick is 30 ns*/
-//
-//    error_report("wdt timeout %" "\n", timeout);
-//    error_report("wdt timeout %x", (uint) timeout);
-//
-//    timer_mod(d->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + timeout);
-//    // timeout_new_ns function
-}
-
-static uint32_t exynos4_wdt_mem_readl(void *vp, hwaddr offset)
-{
-    assert(offset < sizeof(wdt_mem)*4);
-    error_report("rl offset = %x, read = %x\n", (int) offset, (int) wdt_mem[offset]);
-    return wdt_mem[offset / 4];
-}
-
-static void exynos4_wdt_mem_writel(void *vp, hwaddr offset, uint32_t val)
-{
-    // Exynos4210State *s = vp;
-    assert(offset < sizeof(wdt_mem)*4);
-    error_report("wl offset = %x, write = %x\n", (int) offset, val);
-
-    if (offset == 0 && val & EXYNOS4210_WTCON_ENABLE) {
-    	// enabling the wdt
-    	// arm initial count
-    	wdt_mem[2] = wdt_mem[1];
-    	// set timer ticking
-    	uint64_t expire_time_ns = 500000000; 	// 500 milliseconds
-    	QEMUTimer *timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, wdt_restart_timer, NULL);
-    	timer_mod_ns(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + expire_time_ns);
-    }
-
-    wdt_mem[offset / 4] = val;
-}
-
-static const MemoryRegionOps exynos4210_wdt_ops = {
-	.old_mmio = {
-		.read = {
-			exynos4_wdt_mem_readl,
-			exynos4_wdt_mem_readl,
-			exynos4_wdt_mem_readl,
-		},
-		.write = {
-			exynos4_wdt_mem_writel,
-			exynos4_wdt_mem_writel,
-			exynos4_wdt_mem_writel,
-		},
-	},
-    .endianness = DEVICE_NATIVE_ENDIAN,
-    .impl = {
-        .min_access_size = 4,
-    }
-};
-
-
-/*
-static void exynos4_wdt_timeout_checker()
-{
-	// error_report("addr = %x, val = %x\n", (int) addr, val);
-	// void qapi_event_send_reset(bool guest, Error **errp);
-    // qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-}
-*/
 
 
 static uint64_t exynos4210_chipid_and_omr_read(void *opaque, hwaddr offset,
@@ -399,12 +282,6 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem)
         NULL, "exynos4210.chipid", sizeof(chipid_and_omr));
     memory_region_add_subregion(system_mem, EXYNOS4210_CHIPID_ADDR,
                                 &s->chipid_mem);
-
-    /* Watchdog timer */
-//    memory_region_init_io(&s->wdt_mem, NULL, &exynos4210_wdt_ops, s,
-//    		"exynos4210.wdt", sizeof(wdt_mem));
-//    memory_region_add_subregion(system_mem, EXYNOS4210_WDT_BASE_ADDR,
-//                                &s->wdt_mem);
 
     /* Internal ROM */
     memory_region_init_ram(&s->irom_mem, NULL, "exynos4210.irom",
