@@ -2752,6 +2752,29 @@ void tcg_dump_op_count(FILE *f, fprintf_function cpu_fprintf)
 }
 #endif
 
+typedef struct {
+    char name[64];
+    int count;
+    TCGTemp *ts;
+} AAVar;
+
+//static char * aa_tcg_get_const_str_idx(TCGContext *s, char *buf, int buf_size, unsigned long int constant_value) {
+//    snprintf(buf, buf_size, "$0x%" TCG_PRIlx, constant_value);
+//    return buf;
+//}
+
+static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *t) {
+    return tcg_get_arg_str_ptr(s, buf, buf_size, t);
+}
+
+static AAVar* aa_search_tmp_in_array(const char* needle, AAVar* heap, int heap_size) {
+    for (int i=0; i < heap_size; i++) {
+        if (strcmp(needle, heap[i].name) == 0) {
+            return &heap[i];
+        }
+    }
+    return NULL;
+}
 
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
@@ -2786,7 +2809,147 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     }
 #endif
 
+    /* ARTEM:
+     * Create a buffer to store all temps and each temp's usage count. This is basically a
+     * copy of s->temps with a counter added.
+     * Look at the ops. There is a buffer for all ops it is s->gen_op_buf, we look at
+     * each op by looping through the buffer. Then we get to the arguments each op uses
+     *
+     * Then need to find which temp value this arg is connected to.
+     * How to find which temp value this arg relates to? Need to establish this connection
+     * between argument to operation and the structure that holds temp value (?).
+     *
+     * For each argument find the corresponding temp from s->temp. Look up that temp
+     * in our buffer (the one which is almost a copy of s->temps) and increment the
+     * counter for usage.
+     *
+     * Loop through our buffer and firgure out which temp is used the most often.
+     */
+    AAVar metas[128];
+    int metas_len = 0;
+#ifdef DEBUG_DISAS
+    memset(&metas[0], 0, sizeof(AAVar) * 128);
+#endif
+
+    char buf[128];
+#ifdef DEBUG_DISAS
+    memset(&buf[0], 0, sizeof(buf));
+#endif
+    TCGOp *op;
+
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = op->next) {
+        int i, k, nb_oargs, nb_iargs, nb_cargs;
+        const TCGOpDef *def;
+        const TCGArg *args;
+        TCGTemp *t;
+        TCGOpcode c;
+
+        // the instruction type and index of the arguments
+        op = &s->gen_op_buf[oi];
+        // instruction type explicitly
+        c = op->opc;
+        // describes the instruction and its arguments specification
+        def = &tcg_op_defs[c];
+        // the first argument to the instruction (ordered iargs, oargs, cargs for their quantities see def)
+        args = &s->gen_opparam_buf[op->args];
+
+        if (c == INDEX_op_insn_start || c == INDEX_op_call) {
+            // instruction is difficult to deal with or is not related to our variables
+            continue;
+        } else {
+            // if instruction is an easy one to deal with
+            nb_oargs = def->nb_oargs;
+            nb_iargs = def->nb_iargs;
+            nb_cargs = def->nb_cargs;
+
+            k = 0;
+            for (i = 0; i < nb_oargs; i++) {
+                t = &s->temps[args[k++]];
+                const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
+                AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
+                if (! meta) {
+                    AAVar new = {  .count = 0, .ts = t };
+                    strcpy(new.name, arg_name);
+                    metas[metas_len++] = new;
+                } else {
+                    meta->count++;
+                }
+            }
+
+            for (i = 0; i < nb_iargs; i++) {
+                t = &s->temps[args[k++]];
+                const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
+                AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
+                if (! meta) {
+                    AAVar new = {  .count = 0, .ts = t };
+                    strcpy(new.name, arg_name);
+                    metas[metas_len++] = new;
+                } else {
+                    meta->count++;
+                }
+            }
+
+            // magic code from inside of the debug function
+            switch (c) {
+            case INDEX_op_brcond_i32:
+            case INDEX_op_setcond_i32:
+            case INDEX_op_movcond_i32:
+            case INDEX_op_brcond2_i32:
+            case INDEX_op_setcond2_i32:
+            case INDEX_op_brcond_i64:
+            case INDEX_op_setcond_i64:
+            case INDEX_op_movcond_i64:
+                i = 1;
+                break;
+            case INDEX_op_qemu_ld_i32:
+            case INDEX_op_qemu_st_i32:
+            case INDEX_op_qemu_ld_i64:
+            case INDEX_op_qemu_st_i64:
+                i = 1;
+                break;
+            default:
+                i = 0;
+                break;
+            }
+
+            switch (c) {
+            case INDEX_op_set_label:
+            case INDEX_op_br:
+            case INDEX_op_brcond_i32:
+            case INDEX_op_brcond_i64:
+            case INDEX_op_brcond2_i32:
+                i++, k++;
+                break;
+            default:
+                break;
+            }
+
+            for (; i < nb_cargs; i++, k++) {
+                // ignore constants for now. Its unlikely keeping them in registers will increase speed
+            }
+        }
+    }
+
+    // find the variable with maximum number of counts
+    AAVar max_var = { .count = -1, .ts = NULL };
+    for (int i=0; i < metas_len; i++) {
+        if (metas[i].count > max_var.count) {
+            max_var = metas[i];
+        }
+    }
+
+    // flushes any data in registers
     tcg_reg_alloc_start(s);
+
+    // get more info about the current state
+//    TCGRegSet allocated_regs = s->reserved_regs;
+//    TCGTemp *ts = max_var.ts;
+//    TCGType itype = ts->type;   //  is it 32 or 64 bits
+//    // load the temporary on a register
+//    temp_load(s, ts, tcg_target_available_regs[itype], allocated_regs);
+
+    // print its name
+    qemu_log("Most popular argument: %s \n", max_var.name);
 
     s->code_buf = tb->tc.ptr;
     s->code_ptr = tb->tc.ptr;
