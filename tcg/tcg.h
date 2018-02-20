@@ -576,6 +576,7 @@ typedef struct TCGTemp {
     TCGTempVal val_type:8;
     TCGType base_type:8;
     TCGType type:8;
+    /* fixed_reg = true if the temporary always lives in the same register */
     unsigned int fixed_reg:1;
     unsigned int indirect_reg:1;
     unsigned int indirect_base:1;
@@ -876,9 +877,15 @@ enum {
 
 typedef struct TCGOpDef {
     const char *name;
+    /* nb_args is the total number of arguments: oargs + iargs + cargs */
+    /* cargs is number of Constant args (arguments that are constants) */
+    /* the type of arg: i, o, c tells us where to look up the arg value? */
     uint8_t nb_oargs, nb_iargs, nb_cargs, nb_args;
     uint8_t flags;
+    /* No idea what constraints are, but they are probably not important */
     TCGArgConstraint *args_ct;
+    /* this is some array. Probably arguments are put there in sorted
+     * order (by usage), i.e. one oarg first, followed by a couple of iargs */
     int *sorted_args;
 #if defined(CONFIG_DEBUG_TCG)
     int used;

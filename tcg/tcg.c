@@ -2441,6 +2441,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
     TCGArg arg;
     const TCGArgConstraint *arg_ct;
     TCGTemp *ts;
+    /* we create a new array of arguments */
     TCGArg new_args[TCG_MAX_OP_ARGS];
     int const_args[TCG_MAX_OP_ARGS];
 
@@ -2448,6 +2449,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
     nb_iargs = def->nb_iargs;
 
     /* copy constants */
+    /* we copy from args + offset into local array of new_args+offset */
     memcpy(new_args + nb_oargs + nb_iargs, 
            args + nb_oargs + nb_iargs, 
            sizeof(TCGArg) * def->nb_cargs);
