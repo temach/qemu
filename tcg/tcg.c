@@ -2764,12 +2764,16 @@ typedef struct {
 //}
 
 static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *t) {
-    // code taken from tcg_get_arg_str_ptr(s, buf, buf_size, t) function
-    // only consider global values. Dont consider tempX values for carrying through basic blocks
+    // code taken from tcg_get_arg_str_ptr(s, buf, buf_size, t) function, only consider
+    // global and local temporaries values as they both can survive basic blocks. Dont
+    // consider temporaries, they only live inside one basic block.
     int idx = temp_idx(s, ts);
 
     if (idx < s->nb_globals) {
         pstrcpy(buf, buf_size, ts->name);
+        return buf;
+    } else if (ts->temp_local) {
+        snprintf(buf, buf_size, "loc%d", idx - s->nb_globals);
         return buf;
     }
     return NULL;
