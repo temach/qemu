@@ -2764,7 +2764,15 @@ typedef struct {
 //}
 
 static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *t) {
-    return tcg_get_arg_str_ptr(s, buf, buf_size, t);
+    // code taken from tcg_get_arg_str_ptr(s, buf, buf_size, t) function
+    // only consider global values. Dont consider tempX values for carrying through basic blocks
+    int idx = temp_idx(s, ts);
+
+    if (idx < s->nb_globals) {
+        pstrcpy(buf, buf_size, ts->name);
+        return buf;
+    }
+    return NULL;
 }
 
 static AAVar* aa_search_tmp_in_array(const char* needle, AAVar* heap, int heap_size) {
@@ -2866,6 +2874,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             for (i = 0; i < nb_oargs; i++) {
                 t = &s->temps[args[k++]];
                 const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
+                if (! arg_name) {
+                    continue;
+                }
                 AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
                 if (! meta) {
                     AAVar new = {  .count = 0, .ts = t };
@@ -2879,6 +2890,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             for (i = 0; i < nb_iargs; i++) {
                 t = &s->temps[args[k++]];
                 const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
+                if (! arg_name) {
+                    continue;
+                }
                 AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
                 if (! meta) {
                     AAVar new = {  .count = 0, .ts = t };
@@ -2887,45 +2901,6 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
                 } else {
                     meta->count++;
                 }
-            }
-
-            // magic code from inside of the debug function
-            switch (c) {
-            case INDEX_op_brcond_i32:
-            case INDEX_op_setcond_i32:
-            case INDEX_op_movcond_i32:
-            case INDEX_op_brcond2_i32:
-            case INDEX_op_setcond2_i32:
-            case INDEX_op_brcond_i64:
-            case INDEX_op_setcond_i64:
-            case INDEX_op_movcond_i64:
-                i = 1;
-                break;
-            case INDEX_op_qemu_ld_i32:
-            case INDEX_op_qemu_st_i32:
-            case INDEX_op_qemu_ld_i64:
-            case INDEX_op_qemu_st_i64:
-                i = 1;
-                break;
-            default:
-                i = 0;
-                break;
-            }
-
-            switch (c) {
-            case INDEX_op_set_label:
-            case INDEX_op_br:
-            case INDEX_op_brcond_i32:
-            case INDEX_op_brcond_i64:
-            case INDEX_op_brcond2_i32:
-                i++, k++;
-                break;
-            default:
-                break;
-            }
-
-            for (; i < nb_cargs; i++, k++) {
-                // ignore constants for now. Its unlikely keeping them in registers will increase speed
             }
         }
     }
