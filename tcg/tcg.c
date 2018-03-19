@@ -1167,7 +1167,10 @@ static void tcg_reg_alloc_start(TCGContext *s)
     TCGTemp *ts;
     for(i = 0; i < s->nb_globals; i++) {
         ts = &s->temps[i];
-        if (ts->fixed_reg) {
+        if (ts == s->aa_drag_through) {
+            // if the variable is marked for register
+            ts->val_type = TEMP_VAL_REG;
+        } else if (ts->fixed_reg) {
             ts->val_type = TEMP_VAL_REG;
         } else {
             ts->val_type = TEMP_VAL_MEM;
@@ -1175,7 +1178,10 @@ static void tcg_reg_alloc_start(TCGContext *s)
     }
     for(i = s->nb_globals; i < s->nb_temps; i++) {
         ts = &s->temps[i];
-        if (ts->temp_local) {
+        if (ts == s->aa_drag_through) {
+            // if the variable is marked for register
+            ts->val_type = TEMP_VAL_REG;
+        } else if (ts->temp_local) {
             ts->val_type = TEMP_VAL_MEM;
         } else {
             ts->val_type = TEMP_VAL_DEAD;
@@ -2136,6 +2142,9 @@ static void temp_load(TCGContext *, TCGTemp *, TCGRegSet, TCGRegSet);
 static void temp_free_or_dead(TCGContext *s, TCGTemp *ts, int free_or_dead)
 {
     if (ts->fixed_reg) {
+        return;
+    }
+    if (ts == s->aa_drag_through) {
         return;
     }
     if (ts->val_type == TEMP_VAL_REG) {
