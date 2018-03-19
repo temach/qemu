@@ -635,6 +635,15 @@ QEMU_BUILD_BUG_ON(OPPARAM_BUF_SIZE > (1 << 14));
 /* Make sure that we don't overflow 64 bits without noticing.  */
 QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
 
+
+// ARTEM
+// Struct to hold meta information about a temporary (its name and count of its usage)
+typedef struct AAVar {
+    char name[32];
+    int count;
+    TCGTemp *ts;
+} AAVar;
+
 struct TCGContext {
     uint8_t *pool_cur, *pool_end;
     TCGPool *pool_first, *pool_current, *pool_first_large;
@@ -656,6 +665,12 @@ struct TCGContext {
     TCGTemp *frame_temp;
 
     tcg_insn_unit *code_ptr;
+
+    // ARTEM
+    // choose a temporary (local temp or global) to be placed on the register and kept there
+    // How is this similar to defining fixed_reg? tcg/README mentions that putting globals
+    // on fixed register is bad for speed, why?
+    AAVar aa_drag_through;
 
 #ifdef CONFIG_PROFILER
     /* profiling info */

@@ -2752,12 +2752,6 @@ void tcg_dump_op_count(FILE *f, fprintf_function cpu_fprintf)
 }
 #endif
 
-typedef struct {
-    char name[64];
-    int count;
-    TCGTemp *ts;
-} AAVar;
-
 //static char * aa_tcg_get_const_str_idx(TCGContext *s, char *buf, int buf_size, unsigned long int constant_value) {
 //    snprintf(buf, buf_size, "$0x%" TCG_PRIlx, constant_value);
 //    return buf;
@@ -2917,15 +2911,17 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         }
     }
 
+    s->aa_drag_through = max_var;
+
     // flushes any data in registers
     tcg_reg_alloc_start(s);
 
     // get more info about the current state
-//    TCGRegSet allocated_regs = s->reserved_regs;
-//    TCGTemp *ts = max_var.ts;
-//    TCGType itype = ts->type;   //  is it 32 or 64 bits
-//    // load the temporary on a register
-//    temp_load(s, ts, tcg_target_available_regs[itype], allocated_regs);
+    TCGRegSet allocated_regs = s->reserved_regs;
+    TCGTemp *ts = max_var.ts;
+    TCGType itype = ts->type;   //  is it 32 or 64 bits
+    // load the temporary on a register
+    temp_load(s, ts, tcg_target_available_regs[itype], allocated_regs);
 
     // print its name
     qemu_log("Most popular argument: %s \n", max_var.name);
