@@ -1167,7 +1167,7 @@ static void tcg_reg_alloc_start(TCGContext *s)
     TCGTemp *ts;
     for(i = 0; i < s->nb_globals; i++) {
         ts = &s->temps[i];
-        if (ts == s->aa_drag_through) {
+        if (ts == s->aa_drag_through.ts) {
             // if the variable is marked for register
             ts->val_type = TEMP_VAL_REG;
         } else if (ts->fixed_reg) {
@@ -1178,10 +1178,7 @@ static void tcg_reg_alloc_start(TCGContext *s)
     }
     for(i = s->nb_globals; i < s->nb_temps; i++) {
         ts = &s->temps[i];
-        if (ts == s->aa_drag_through) {
-            // if the variable is marked for register
-            ts->val_type = TEMP_VAL_REG;
-        } else if (ts->temp_local) {
+        if (ts->temp_local) {
             ts->val_type = TEMP_VAL_MEM;
         } else {
             ts->val_type = TEMP_VAL_DEAD;
@@ -1634,6 +1631,24 @@ TCGOp *tcg_op_insert_after(TCGContext *s, TCGOp *old_op,
 
 /* liveness analysis: end of function: all temps are dead, and globals
    should be in memory. */
+static inline void tcg_la_reset_soft(TCGContext *s, uint8_t *temp_state)
+{
+    // unroll memset(temp_state, TS_DEAD | TS_MEM, s->nb_globals)
+    // into a loop, because we need to exclude some items
+    int i;
+    for (i = 0; i < s->nb_globals; i++) {
+        if (temp_idx(s, s->aa_drag_through.ts) == i) {
+            // we are at the index of the temp that we should drag through
+            continue;
+        } else {
+            temp_state[i] = TS_DEAD | TS_MEM;
+        }
+    }
+    memset(temp_state + s->nb_globals, TS_DEAD, s->nb_temps - s->nb_globals);
+}
+
+/* liveness analysis: end of function: all temps are dead, and globals
+   should be in memory. */
 static inline void tcg_la_func_end(TCGContext *s, uint8_t *temp_state)
 {
     memset(temp_state, TS_DEAD | TS_MEM, s->nb_globals);
@@ -1646,9 +1661,12 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
 {
     int i, n;
 
-    tcg_la_func_end(s, temp_state);
+    tcg_la_reset_soft(s, temp_state);
     for (i = s->nb_globals, n = s->nb_temps; i < n; i++) {
-        if (s->temps[i].temp_local) {
+        if (temp_idx(s, s->aa_drag_through.ts) == i) {
+            // we are at the index of the temp that we should drag through
+            continue;
+        } else if (s->temps[i].temp_local) {
             temp_state[i] |= TS_MEM;
         }
     }
@@ -1662,8 +1680,14 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
     int nb_globals = s->nb_globals;
     int oi, oi_prev;
 
+    // really flush all temp_state, this is needed here at init stage,
+    // because we start at function end and go to function start
+    // in our analysis, at function end all vars are really synced and dead
     tcg_la_func_end(s, temp_state);
 
+    // notice we start with opcode 0 and take his "prev" this
+    // way we get not the start opcode but the end opcode
+    // and we travel backwards
     for (oi = s->gen_op_buf[0].prev; oi != 0; oi = oi_prev) {
         int i, nb_iargs, nb_oargs;
         TCGOpcode opc_new, opc_new2;
@@ -1713,12 +1737,25 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
 
                     if (!(call_flags & (TCG_CALL_NO_WRITE_GLOBALS |
                                         TCG_CALL_NO_READ_GLOBALS))) {
-                        /* globals should go back to memory */
-                        memset(temp_state, TS_DEAD | TS_MEM, nb_globals);
+                        /* globals should go back to memory
+                         * but not all globals */
+                        for (i = 0; i < s->nb_globals; i++) {
+                            if (temp_idx(s, s->aa_drag_through.ts) == i) {
+                                // we are at the index of the temp that we should drag through
+                                continue;
+                            } else {
+                                temp_state[i] = TS_DEAD | TS_MEM;
+                            }
+                        }
                     } else if (!(call_flags & TCG_CALL_NO_READ_GLOBALS)) {
                         /* globals should be synced to memory */
                         for (i = 0; i < nb_globals; i++) {
-                            temp_state[i] |= TS_MEM;
+                            if (temp_idx(s, s->aa_drag_through.ts) == i) {
+                                // we are at the index of the temp that we should drag through
+                                continue;
+                            } else {
+                                temp_state[i] |= TS_MEM;
+                            }
                         }
                     }
 
@@ -1844,7 +1881,9 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
                 tcg_op_remove(s, op);
             } else {
             do_not_remove:
-                /* output args are dead */
+                /* output args are dead
+                 * output args are born in the state of being dead
+                 * they have to prove that they are useful */
                 for (i = 0; i < nb_oargs; i++) {
                     arg = args[i];
                     if (temp_state[arg] & TS_DEAD) {
@@ -2144,9 +2183,7 @@ static void temp_free_or_dead(TCGContext *s, TCGTemp *ts, int free_or_dead)
     if (ts->fixed_reg) {
         return;
     }
-    if (ts == s->aa_drag_through) {
-        return;
-    }
+    // empty  the register, now the reg is not associated with any temporary
     if (ts->val_type == TEMP_VAL_REG) {
         s->reg_to_temp[ts->reg] = NULL;
     }
@@ -2766,7 +2803,7 @@ void tcg_dump_op_count(FILE *f, fprintf_function cpu_fprintf)
 //    return buf;
 //}
 
-static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *t) {
+static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *ts) {
     // code taken from tcg_get_arg_str_ptr(s, buf, buf_size, t) function, only consider
     // global and local temporaries values as they both can survive basic blocks. Dont
     // consider temporaries, they only live inside one basic block.
@@ -2799,31 +2836,6 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     tcg_optimize(s);
 #endif
 
-    {
-        uint8_t *temp_state = tcg_malloc(s->nb_temps + s->nb_indirects);
-
-        liveness_pass_1(s, temp_state);
-
-        if (s->nb_indirects > 0) {
-            /* Replace indirect temps with direct temps.  */
-            if (liveness_pass_2(s, temp_state)) {
-                /* If changes were made, re-run liveness.  */
-                liveness_pass_1(s, temp_state);
-            }
-        }
-    }
-
-#ifdef DEBUG_DISAS
-    if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
-                 && qemu_log_in_addr_range(tb->pc))) {
-        qemu_log_lock();
-        qemu_log("OP after optimization and liveness analysis:\n");
-        tcg_dump_ops(s);
-        qemu_log("\n");
-        qemu_log_unlock();
-    }
-#endif
-
     /* ARTEM:
      * Create a buffer to store all temps and each temp's usage count. This is basically a
      * copy of s->temps with a counter added.
@@ -2853,7 +2865,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     TCGOp *op;
 
     for (oi = s->gen_op_buf[0].next; oi != 0; oi = op->next) {
-        int i, k, nb_oargs, nb_iargs, nb_cargs;
+        int i, k, nb_oargs, nb_iargs;
         const TCGOpDef *def;
         const TCGArg *args;
         TCGTemp *t;
@@ -2875,7 +2887,6 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             // if instruction is an easy one to deal with
             nb_oargs = def->nb_oargs;
             nb_iargs = def->nb_iargs;
-            nb_cargs = def->nb_cargs;
 
             k = 0;
             for (i = 0; i < nb_oargs; i++) {
@@ -2920,20 +2931,47 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         }
     }
 
+    // mark the special variable that should not be synced on block end
     s->aa_drag_through = max_var;
+
+    // print its name
+    qemu_log("Most popular argument: %s \n", max_var.name);
+
+    {
+        uint8_t *temp_state = tcg_malloc(s->nb_temps + s->nb_indirects);
+
+        liveness_pass_1(s, temp_state);
+
+        if (s->nb_indirects > 0) {
+            /* Replace indirect temps with direct temps.  */
+            if (liveness_pass_2(s, temp_state)) {
+                /* If changes were made, re-run liveness.  */
+                liveness_pass_1(s, temp_state);
+            }
+        }
+    }
+
+#ifdef DEBUG_DISAS
+    if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
+                 && qemu_log_in_addr_range(tb->pc))) {
+        qemu_log_lock();
+        qemu_log("OP after optimization and liveness analysis:\n");
+        tcg_dump_ops(s);
+        qemu_log("\n");
+        qemu_log_unlock();
+    }
+#endif
+
 
     // flushes any data in registers
     tcg_reg_alloc_start(s);
 
-    // get more info about the current state
-    TCGRegSet allocated_regs = s->reserved_regs;
-    TCGTemp *ts = max_var.ts;
-    TCGType itype = ts->type;   //  is it 32 or 64 bits
-    // load the temporary on a register
-    temp_load(s, ts, tcg_target_available_regs[itype], allocated_regs);
-
-    // print its name
-    qemu_log("Most popular argument: %s \n", max_var.name);
+//    // get more info about the current state
+//    TCGRegSet allocated_regs = s->reserved_regs;
+//    TCGTemp *ts = max_var.ts;
+//    TCGType itype = ts->type;   //  is it 32 or 64 bits
+//    // load the temporary on a register
+//    temp_load(s, ts, tcg_target_available_regs[itype], allocated_regs);
 
     s->code_buf = tb->tc.ptr;
     s->code_ptr = tb->tc.ptr;
