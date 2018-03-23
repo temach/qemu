@@ -1651,7 +1651,7 @@ static inline void tcg_la_globals_bb_end(TCGContext *s, uint8_t *temp_state) {
             // make a note for lifeness analysis: when reg alloc will gen
             // code he will not free the reg that was once assigned to this
             // but he will save to memory
-            temp_state[i] = TS_REG | TS_MEM;
+            temp_state[i] |= TS_REG | TS_MEM;
         } else {
             // everyone else gets saved to mem and then dies (is discarded)
             temp_state[i] = TS_DEAD | TS_MEM;
@@ -1663,9 +1663,16 @@ static inline void tcg_la_sync_globals_before_call(TCGContext *s, uint8_t *temp_
     int i;
 
     for (i = 0; i < s->nb_globals; i++) {
-        // even the special register that must be dragged through
-        // everyone else gets synced/saved to mem
-        temp_state[i] = TS_DEAD | TS_MEM;
+        if (temp_idx(s, s->aa_drag_through.ts) == i) {
+            // we are at the index of the temp that we should drag through
+            // make a note for lifeness analysis: when reg alloc will gen
+            // code he will not free the reg that was once assigned to this
+            // but he will save to memory
+            temp_state[i] |= TS_REG | TS_MEM;
+        } else {
+            // everyone else gets synced/saved to mem
+            temp_state[i] = TS_DEAD | TS_MEM;
+        }
     }
 }
 
@@ -1681,7 +1688,7 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
             // make a note for lifeness analysis: when reg alloc will gen
             // code he will not free the reg that was once assigned to this
             // but he will save to memory
-            temp_state[i] = TS_REG | TS_MEM;
+            temp_state[i] |= TS_REG | TS_MEM;
         } else {
             // everyone else gets saved to mem and then dies (is discarded)
             temp_state[i] = TS_DEAD | TS_MEM;
@@ -1694,7 +1701,7 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
             // make a note for lifeness analysis: when reg alloc will gen
             // code he will not free the reg that was once assigned to this
             // but he will save to memory
-            temp_state[i] = TS_REG | TS_MEM;
+            temp_state[i] |= TS_REG | TS_MEM;
         } else if (s->temps[i].temp_local) {
             // if they exist in next bb, then make a note for lifeness
             // analysis algoritm: when reg alloc will gen code
@@ -1785,6 +1792,10 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
                             arg_life |= SYNC_ARG << i;
                         }
                         temp_state[arg] = TS_DEAD;
+                        if (&s->temps[arg] == s->aa_drag_through.ts) {
+                            // overwrite the TS_DEAD to keep this temp alive
+                            temp_state[arg] = TS_REG | TS_MEM;
+                        }
                     }
 
                     if (!(call_flags & (TCG_CALL_NO_WRITE_GLOBALS |
@@ -1936,6 +1947,10 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
                         arg_life |= SYNC_ARG << i;
                     }
                     temp_state[arg] = TS_DEAD;
+                    if (&s->temps[arg] == s->aa_drag_through.ts) {
+                        // overwrite the TS_DEAD to keep this temp alive
+                        temp_state[arg] = TS_REG | TS_MEM;
+                    }
                 }
 
                 /* if end of basic block, update */
@@ -2207,7 +2222,7 @@ static void temp_save(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs)
 {
     /* The liveness analysis already ensures that globals are back
        in memory. Keep an tcg_debug_assert for safety. */
-    tcg_debug_assert(ts->val_type == TEMP_VAL_MEM || ts->fixed_reg);
+    tcg_debug_assert(ts->val_type == TEMP_VAL_MEM || ts->fixed_reg || ts == s->aa_drag_through.ts);
 }
 
 /* save globals to their canonical location and assume they can be
