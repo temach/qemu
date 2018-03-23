@@ -2836,8 +2836,46 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
     int i, oi, oi_next, num_insns;
 
+#ifdef CONFIG_PROFILER
+    {
+        int n;
+
+        n = s->gen_op_buf[0].prev + 1;
+        s->op_count += n;
+        if (n > s->op_count_max) {
+            s->op_count_max = n;
+        }
+
+        n = s->nb_temps;
+        s->temp_count += n;
+        if (n > s->temp_count_max) {
+            s->temp_count_max = n;
+        }
+    }
+#endif
+
+#ifdef DEBUG_DISAS
+    if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP)
+                 && qemu_log_in_addr_range(tb->pc))) {
+        qemu_log_lock();
+        qemu_log("OP:\n");
+        tcg_dump_ops(s);
+        qemu_log("\n");
+        qemu_log_unlock();
+    }
+#endif
+
+#ifdef CONFIG_PROFILER
+    s->opt_time -= profile_getclock();
+#endif
+
 #ifdef USE_TCG_OPTIMIZATIONS
     tcg_optimize(s);
+#endif
+
+#ifdef CONFIG_PROFILER
+    s->opt_time += profile_getclock();
+    s->la_time -= profile_getclock();
 #endif
 
     {
@@ -2851,6 +2889,10 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 
         liveness_pass_1(s, temp_state);
     }
+
+#ifdef CONFIG_PROFILER
+    s->la_time += profile_getclock();
+#endif
 
 #ifdef DEBUG_DISAS
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
@@ -2877,6 +2919,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     s->code_buf = tb->tc.ptr;
     s->code_ptr = tb->tc.ptr;
 
+#ifdef TCG_TARGET_NEED_LDST_LABELS
+    s->ldst_labels = NULL;
+#endif
 #ifdef TCG_TARGET_NEED_POOL_LABELS
     s->pool_labels = NULL;
 #endif
@@ -2890,6 +2935,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         TCGLifeData arg_life = op->life;
 
         oi_next = op->next;
+#ifdef CONFIG_PROFILER
+        tcg_table_op_count[opc]++;
+#endif
 
         switch (opc) {
         case INDEX_op_mov_i32:
@@ -2949,6 +2997,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     s->gen_insn_end_off[num_insns] = tcg_current_code_size(s);
 
     /* Generate TB finalization at the end of block */
+#ifdef TCG_TARGET_NEED_LDST_LABELS
+    if (!tcg_out_ldst_finalize(s)) {
+        return -1;
+    }
+#endif
 #ifdef TCG_TARGET_NEED_POOL_LABELS
     if (!tcg_out_pool_finalize(s)) {
         return -1;
