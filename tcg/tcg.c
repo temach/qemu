@@ -1640,6 +1640,35 @@ static inline void tcg_la_func_end(TCGContext *s, uint8_t *temp_state)
     memset(temp_state + s->nb_globals, TS_DEAD, s->nb_temps - s->nb_globals);
 }
 
+static inline void tcg_la_globals_bb_end(TCGContext *s, uint8_t *temp_state) {
+    /* globals should go back to memory
+     * but not all globals */
+    int i;
+
+    for (i = 0; i < s->nb_globals; i++) {
+        if (temp_idx(s, s->aa_drag_through.ts) == i) {
+            // we are at the index of the temp that we should drag through
+            // make a note for lifeness analysis: when reg alloc will gen
+            // code he will not free the reg that was once assigned to this
+            // but he will save to memory
+            temp_state[i] = TS_REG | TS_MEM;
+        } else {
+            // everyone else gets saved to mem and then dies (is discarded)
+            temp_state[i] = TS_DEAD | TS_MEM;
+        }
+    }
+}
+
+static inline void tcg_la_sync_globals_before_call(TCGContext *s, uint8_t *temp_state) {
+    int i;
+
+    for (i = 0; i < s->nb_globals; i++) {
+        // even the special register that must be dragged through
+        // everyone else gets synced/saved to mem
+        temp_state[i] = TS_DEAD | TS_MEM;
+    }
+}
+
 /* liveness analysis: end of basic block: all temps are dead, globals
    and local temps should be in memory. */
 static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
@@ -1651,7 +1680,8 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
             // we are at the index of the temp that we should drag through
             // make a note for lifeness analysis: when reg alloc will gen
             // code he will not free the reg that was once assigned to this
-            temp_state[i] |= TS_REG;
+            // but he will save to memory
+            temp_state[i] = TS_REG | TS_MEM;
         } else {
             // everyone else gets saved to mem and then dies (is discarded)
             temp_state[i] = TS_DEAD | TS_MEM;
@@ -1663,7 +1693,8 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
             // we are at the index of the temp that we should drag through
             // make a note for lifeness analysis: when reg alloc will gen
             // code he will not free the reg that was once assigned to this
-            temp_state[i] |= TS_REG;
+            // but he will save to memory
+            temp_state[i] = TS_REG | TS_MEM;
         } else if (s->temps[i].temp_local) {
             // if they exist in next bb, then make a note for lifeness
             // analysis algoritm: when reg alloc will gen code
@@ -1758,25 +1789,16 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
 
                     if (!(call_flags & (TCG_CALL_NO_WRITE_GLOBALS |
                                         TCG_CALL_NO_READ_GLOBALS))) {
-                        /* globals should go back to memory
-                         * but not all globals */
-                        for (i = 0; i < s->nb_globals; i++) {
-                            if (temp_idx(s, s->aa_drag_through.ts) == i) {
-                                // we are at the index of the temp that we should drag through
-                                continue;
-                            } else {
-                                temp_state[i] = TS_DEAD | TS_MEM;
-                            }
-                        }
+                        /* if the call does not offer (read AND write) protection
+                         * for globals, then globals should go back to memory
+                         * and regs are TS_DEAD because the call can change them */
+                        tcg_la_sync_globals_before_call(s, temp_state);
                     } else if (!(call_flags & TCG_CALL_NO_READ_GLOBALS)) {
-                        /* globals should be synced to memory */
+                        /* if the call does not offer protection from reading
+                         * global variables, then globals should be synced to
+                         * memory (the call might want to read them) */
                         for (i = 0; i < nb_globals; i++) {
-                            if (temp_idx(s, s->aa_drag_through.ts) == i) {
-                                // we are at the index of the temp that we should drag through
-                                continue;
-                            } else {
-                                temp_state[i] |= TS_MEM;
-                            }
+                            temp_state[i] |= TS_MEM;
                         }
                     }
 
@@ -2066,7 +2088,7 @@ static inline void temp_dead(TCGContext *s, TCGTemp *ts)
 /* Sync a temporary to memory. 'allocated_regs' is used in case a temporary
    registers needs to be allocated to store a constant.  If 'free_or_dead'
    is non-zero, subsequently release the temporary; if it is positive, the
-   temp is dead; if it is negative, the temp is free.  */
+   temp is dead; if it is negative, the temp is free, if 0 nothing changes. */
 static void temp_sync(TCGContext *s, TCGTemp *ts,
                       TCGRegSet allocated_regs, int free_or_dead)
 {
