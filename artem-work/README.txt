@@ -19,3 +19,8 @@ and break on tcg_gen_code.
 
 For bigger picture of arm/gnu assembler
 https://stackoverflow.com/questions/43574163/why-is-gnu-as-syntax-different-between-x86-and-arm/43576532#43576532
+
+For testing try to load linux with it:
+(compile the x86_64 qemu system binary, then run the linux kernel which is already on your system)
+bin/debug/native/x86_64-softmmu/qemu-system-x86_64 -kernel /boot/vmlinuz-4.9.0-3-amd64 -initrd /boot/initrd.img-4.9.0-3-amd64
+
