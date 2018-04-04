@@ -576,6 +576,7 @@ typedef struct TCGTemp {
     TCGTempVal val_type:8;
     TCGType base_type:8;
     TCGType type:8;
+    /* fixed_reg = true if the temporary always lives in the same register */
     unsigned int fixed_reg:1;
     unsigned int indirect_reg:1;
     unsigned int indirect_base:1;
@@ -634,6 +635,24 @@ QEMU_BUILD_BUG_ON(OPPARAM_BUF_SIZE > (1 << 14));
 /* Make sure that we don't overflow 64 bits without noticing.  */
 QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
 
+
+// ARTEM
+// Struct to hold meta information about a temporary (its name and count of its usage)
+typedef struct AAVar {
+    char name[32];
+    int count;
+    TCGTemp *ts;
+} AAVar;
+
+// Struct to hold meta information about an op (reg alloc data on its arguments)
+typedef struct AAOp {
+    // The best place to store this uint16_t would have been the TCGOp struct
+    // but that struct is bit aligned for performance, so to avoid damaging
+    // the work of others we will go the long way and keep meta-data on each TCGOp
+    uint16_t reg_life;
+    TCGOp *op;
+} AAOp;
+
 struct TCGContext {
     uint8_t *pool_cur, *pool_end;
     TCGPool *pool_first, *pool_current, *pool_first_large;
@@ -655,6 +674,12 @@ struct TCGContext {
     TCGTemp *frame_temp;
 
     tcg_insn_unit *code_ptr;
+
+    // ARTEM
+    // choose a temporary (local temp or global) to be placed on the register and kept there
+    // How is this similar to defining fixed_reg? tcg/README mentions that putting globals
+    // on fixed register is bad for speed, why?
+    AAVar aa_drag_through;
 
 #ifdef CONFIG_PROFILER
     /* profiling info */
@@ -876,9 +901,15 @@ enum {
 
 typedef struct TCGOpDef {
     const char *name;
+    /* nb_args is the total number of arguments: oargs + iargs + cargs */
+    /* cargs is number of Constant args (arguments that are constants) */
+    /* the type of arg: i, o, c tells us where to look up the arg value? */
     uint8_t nb_oargs, nb_iargs, nb_cargs, nb_args;
     uint8_t flags;
+    /* No idea what constraints are, but they are probably not important */
     TCGArgConstraint *args_ct;
+    /* this is some array. Probably arguments are put there in sorted
+     * order (by usage), i.e. one oarg first, followed by a couple of iargs */
     int *sorted_args;
 #if defined(CONFIG_DEBUG_TCG)
     int used;

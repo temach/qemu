@@ -1620,9 +1620,12 @@ TCGOp *tcg_op_insert_after(TCGContext *s, TCGOp *old_op,
     return new_op;
 }
 
+// this is used only inside the liveness analysis
 #define TS_DEAD  1
 #define TS_MEM   2
+#define TS_REG   4
 
+// this is used in register allocator to decide who takes which reg
 #define IS_DEAD_ARG(n)   (arg_life & (DEAD_ARG << (n)))
 #define NEED_SYNC_ARG(n) (arg_life & (SYNC_ARG << (n)))
 
@@ -1630,8 +1633,30 @@ TCGOp *tcg_op_insert_after(TCGContext *s, TCGOp *old_op,
    should be in memory. */
 static inline void tcg_la_func_end(TCGContext *s, uint8_t *temp_state)
 {
+    // at the end of the function the globals are saved to mem, and dead
     memset(temp_state, TS_DEAD | TS_MEM, s->nb_globals);
+    // at the end of the function the temps are simply dead
     memset(temp_state + s->nb_globals, TS_DEAD, s->nb_temps - s->nb_globals);
+}
+
+static int outputs_of_call_are_all_dead(TCGArg * const args, int nb_oargs, uint8_t * temp_state) {
+    TCGArg arg;
+    int i;
+
+    for (i = 0; i < nb_oargs; i++) {
+        arg = args[i];
+        // if all of the output args are == TS_DEAD (i.e. they
+        // are dead and dont need sync to mem), then we can remove
+        // the call, otherwise if at least one needs sync to mem or
+        // is in a register, then we must keep the call
+        if (temp_state[arg] != TS_DEAD) {
+            // return false
+            return 0;
+        }
+    }
+
+    // return true
+    return 1;
 }
 
 /* liveness analysis: end of basic block: all temps are dead, globals
@@ -1643,6 +1668,7 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
     tcg_la_func_end(s, temp_state);
     for (i = s->nb_globals, n = s->nb_temps; i < n; i++) {
         if (s->temps[i].temp_local) {
+            // it will gen code to write this temp to memory
             temp_state[i] |= TS_MEM;
         }
     }
@@ -1656,8 +1682,14 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
     int nb_globals = s->nb_globals;
     int oi, oi_prev;
 
+    // really flush all temp_state, this is needed here at init stage,
+    // because we start at function end and go to function start
+    // in our analysis, at function end all vars are really synced and dead
     tcg_la_func_end(s, temp_state);
 
+    // notice we start with opcode 0 and take his "prev" this
+    // way we get not the start opcode but the end opcode
+    // and we travel backwards
     for (oi = s->gen_op_buf[0].prev; oi != 0; oi = oi_prev) {
         int i, nb_iargs, nb_oargs;
         TCGOpcode opc_new, opc_new2;
@@ -1682,16 +1714,11 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
                 call_flags = args[nb_oargs + nb_iargs + 1];
 
                 /* pure functions can be removed if their result is unused */
-                if (call_flags & TCG_CALL_NO_SIDE_EFFECTS) {
-                    for (i = 0; i < nb_oargs; i++) {
-                        arg = args[i];
-                        if (temp_state[arg] != TS_DEAD) {
-                            goto do_not_remove_call;
-                        }
-                    }
+                if ((call_flags & TCG_CALL_NO_SIDE_EFFECTS)
+                        && outputs_of_call_are_all_dead(args, nb_oargs, temp_state)) {
                     goto do_remove;
                 } else {
-                do_not_remove_call:
+                    // process the call
 
                     /* output args are dead */
                     for (i = 0; i < nb_oargs; i++) {
@@ -1707,10 +1734,14 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
 
                     if (!(call_flags & (TCG_CALL_NO_WRITE_GLOBALS |
                                         TCG_CALL_NO_READ_GLOBALS))) {
-                        /* globals should go back to memory */
+                        /* if the call does not offer (read AND write) protection
+                         * for globals, then globals should go back to memory
+                         * and regs are TS_DEAD because the call can change them */
                         memset(temp_state, TS_DEAD | TS_MEM, nb_globals);
                     } else if (!(call_flags & TCG_CALL_NO_READ_GLOBALS)) {
-                        /* globals should be synced to memory */
+                        /* if the call does not offer protection from reading
+                         * global variables, then globals should be synced to
+                         * memory (the call might want to read them) */
                         for (i = 0; i < nb_globals; i++) {
                             temp_state[i] |= TS_MEM;
                         }
@@ -1838,7 +1869,9 @@ static void liveness_pass_1(TCGContext *s, uint8_t *temp_state)
                 tcg_op_remove(s, op);
             } else {
             do_not_remove:
-                /* output args are dead */
+                /* output args are dead
+                 * output args are born in the state of being dead
+                 * they have to prove that they are useful */
                 for (i = 0; i < nb_oargs; i++) {
                     arg = args[i];
                     if (temp_state[arg] & TS_DEAD) {
@@ -2138,13 +2171,15 @@ static void temp_free_or_dead(TCGContext *s, TCGTemp *ts, int free_or_dead)
     if (ts->fixed_reg) {
         return;
     }
+    // empty  the register, now the reg is not associated with any temporary
     if (ts->val_type == TEMP_VAL_REG) {
         s->reg_to_temp[ts->reg] = NULL;
     }
-    ts->val_type = (free_or_dead < 0
-                    || ts->temp_local
-                    || temp_idx(s, ts) < s->nb_globals
-                    ? TEMP_VAL_MEM : TEMP_VAL_DEAD);
+    if (free_or_dead < 0 || ts->temp_local || temp_idx(s, ts) < s->nb_globals) {
+        ts->val_type = TEMP_VAL_MEM;
+    } else {
+        ts->val_type = TEMP_VAL_DEAD;
+    }
 }
 
 /* Mark a temporary as dead.  */
@@ -2156,7 +2191,7 @@ static inline void temp_dead(TCGContext *s, TCGTemp *ts)
 /* Sync a temporary to memory. 'allocated_regs' is used in case a temporary
    registers needs to be allocated to store a constant.  If 'free_or_dead'
    is non-zero, subsequently release the temporary; if it is positive, the
-   temp is dead; if it is negative, the temp is free.  */
+   temp is dead; if it is negative, the temp is free, if 0 nothing changes. */
 static void temp_sync(TCGContext *s, TCGTemp *ts,
                       TCGRegSet allocated_regs, int free_or_dead)
 {
@@ -2275,7 +2310,7 @@ static void temp_save(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs)
 {
     /* The liveness analysis already ensures that globals are back
        in memory. Keep an tcg_debug_assert for safety. */
-    tcg_debug_assert(ts->val_type == TEMP_VAL_MEM || ts->fixed_reg);
+    tcg_debug_assert(ts->val_type == TEMP_VAL_MEM || ts->fixed_reg || ts == s->aa_drag_through.ts);
 }
 
 /* save globals to their canonical location and assume they can be
@@ -2402,6 +2437,7 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOpDef *def,
         if (IS_DEAD_ARG(1)) {
             temp_dead(s, ts);
         }
+        // because above we tested IS_DEAD_ARG(0) to be true
         temp_dead(s, ots);
     } else {
         if (IS_DEAD_ARG(1) && !ts->fixed_reg && !ots->fixed_reg) {
@@ -2441,6 +2477,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
     TCGArg arg;
     const TCGArgConstraint *arg_ct;
     TCGTemp *ts;
+    /* we create a new array of arguments */
     TCGArg new_args[TCG_MAX_OP_ARGS];
     int const_args[TCG_MAX_OP_ARGS];
 
@@ -2448,6 +2485,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
     nb_iargs = def->nb_iargs;
 
     /* copy constants */
+    /* we copy from args + offset into local array of new_args+offset */
     memcpy(new_args + nb_oargs + nb_iargs, 
            args + nb_oargs + nb_iargs, 
            sizeof(TCGArg) * def->nb_cargs);
@@ -2750,6 +2788,156 @@ void tcg_dump_op_count(FILE *f, fprintf_function cpu_fprintf)
 }
 #endif
 
+//static char * aa_tcg_get_const_str_idx(TCGContext *s, char *buf, int buf_size, unsigned long int constant_value) {
+//    snprintf(buf, buf_size, "$0x%" TCG_PRIlx, constant_value);
+//    return buf;
+//}
+
+static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *ts) {
+    // code taken from tcg_get_arg_str_ptr(s, buf, buf_size, t) function, only consider
+    // global and local temporaries values as they both can survive basic blocks. Dont
+    // consider temporaries, they only live inside one basic block.
+    int idx = temp_idx(s, ts);
+
+    if (idx < s->nb_globals) {
+        pstrcpy(buf, buf_size, ts->name);
+        return buf;
+    } else if (ts->temp_local) {
+        snprintf(buf, buf_size, "loc%d", idx - s->nb_globals);
+        return buf;
+    }
+    return NULL;
+}
+
+static AAVar* aa_search_tmp_in_array(const char* needle, AAVar* heap, int heap_size) {
+    for (int i=0; i < heap_size; i++) {
+        if (strcmp(needle, heap[i].name) == 0) {
+            return &heap[i];
+        }
+    }
+    return NULL;
+}
+
+static void tcg_assign_to_most_used_var(TCGContext *s) {
+    int oi;
+
+    /* ARTEM:
+     * Create a buffer to store all temps and each temp's usage count. This is basically a
+     * copy of s->temps with a counter added.
+     * Look at the ops. There is a buffer for all ops it is s->gen_op_buf, we look at
+     * each op by looping through the buffer. Then we get to the arguments each op uses
+     *
+     * Then need to find which temp value this arg is connected to.
+     * How to find which temp value this arg relates to? Need to establish this connection
+     * between argument to operation and the structure that holds temp value (?).
+     *
+     * For each argument find the corresponding temp from s->temp. Look up that temp
+     * in our buffer (the one which is almost a copy of s->temps) and increment the
+     * counter for usage.
+     *
+     * Loop through our buffer and firgure out which temp is used the most often.
+     */
+    AAVar metas[128];
+    int metas_len = 0;
+#ifdef DEBUG_DISAS
+    memset(&metas[0], 0, sizeof(AAVar) * 128);
+#endif
+
+    char buf[128];
+#ifdef DEBUG_DISAS
+    memset(&buf[0], 0, sizeof(buf));
+#endif
+    TCGOp *op;
+
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = op->next) {
+        int i, k, nb_oargs, nb_iargs;
+        const TCGOpDef *def;
+        const TCGArg *args;
+        TCGTemp *t;
+        TCGOpcode c;
+
+        // the instruction type and index of the arguments
+        op = &s->gen_op_buf[oi];
+        // instruction type explicitly
+        c = op->opc;
+        // describes the instruction and its arguments specification
+        def = &tcg_op_defs[c];
+        // the first argument to the instruction (ordered iargs, oargs, cargs for their quantities see def)
+        args = &s->gen_opparam_buf[op->args];
+
+        if (c == INDEX_op_insn_start || c == INDEX_op_call) {
+            // instruction is difficult to deal with or is not related to our variables
+            continue;
+        } else {
+            // if instruction is an easy one to deal with
+            nb_oargs = def->nb_oargs;
+            nb_iargs = def->nb_iargs;
+
+            k = 0;
+            for (i = 0; i < nb_oargs; i++) {
+                t = &s->temps[args[k++]];
+                const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
+                if (! arg_name) {
+                    continue;
+                }
+                AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
+                if (! meta) {
+                    AAVar new = {  .count = 0, .ts = t };
+                    strcpy(new.name, arg_name);
+                    metas[metas_len++] = new;
+                } else {
+                    meta->count++;
+                }
+            }
+
+            for (i = 0; i < nb_iargs; i++) {
+                t = &s->temps[args[k++]];
+                const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
+                if (! arg_name) {
+                    continue;
+                }
+                AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
+                if (! meta) {
+                    AAVar new = {  .count = 0, .ts = t };
+                    strcpy(new.name, arg_name);
+                    metas[metas_len++] = new;
+                } else {
+                    meta->count++;
+                }
+            }
+        }
+    }
+
+    // find the variable with maximum number of counts
+    AAVar max_var = { .count = -1, .ts = NULL };
+    for (int i=0; i < metas_len; i++) {
+        if (metas[i].count > max_var.count) {
+            max_var = metas[i];
+        }
+    }
+
+    // mark the special variable that should not be synced on block end
+    s->aa_drag_through = max_var;
+}
+
+// run this after liveness analysis
+// we use liveness results and our own analysis to determine when to
+// emit tcg_out_st (to write temp to mem) or tcg_out_ld (to load temp
+// from mem to reg). With this we want to avoid excessive store/loads.
+static void aa_reg_alloc_pass(TCGContext *s, AAOp *meta) {
+    int oi;
+
+    TCGOp *op;
+
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = op->next) {
+        int i, k, nb_oargs, nb_iargs;
+        const TCGOpDef *def;
+        const TCGArg *args;
+        TCGTemp *t;
+        TCGOpcode c;
+    }
+}
+
 
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
@@ -2798,6 +2986,12 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 #endif
 
     {
+        tcg_assign_to_most_used_var(s);
+
+        qemu_log("Most popular argument: %s \n", s->aa_drag_through.name);
+    }
+
+    {
         uint8_t *temp_state = tcg_malloc(s->nb_temps + s->nb_indirects);
 
         liveness_pass_1(s, temp_state);
@@ -2821,6 +3015,17 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         }
     }
 
+    {
+        // array with meta information about each TCGOp the meta
+        // hints register allocator when to emit load/store
+        // instruction and when to free/keep register
+        AAOp *op_args_alloc_hint = tcg_malloc(sizeof(AAOP) * s->code_gen_buffer_size);
+        memset(&op_args_alloc_hint[0], 0, sizeof(AAOp) * s->code_gen_buffer_size);
+
+        aa_reg_alloc_pass(s, op_args_alloc_hint);
+
+    }
+
 #ifdef CONFIG_PROFILER
     s->la_time += profile_getclock();
 #endif
@@ -2836,6 +3041,8 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     }
 #endif
 
+
+    // flushes any data in registers
     tcg_reg_alloc_start(s);
 
     s->code_buf = tb->tc.ptr;
