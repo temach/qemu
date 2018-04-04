@@ -1,0 +1,407 @@
+PROLOGUE: [size=42]
+0x55c66ba3a5e0:  push   %rbp
+0x55c66ba3a5e1:  push   %rbx
+0x55c66ba3a5e2:  push   %r12
+0x55c66ba3a5e4:  push   %r13
+0x55c66ba3a5e6:  push   %r14
+0x55c66ba3a5e8:  push   %r15
+0x55c66ba3a5ea:  mov    %rdi,%r14
+0x55c66ba3a5ed:  add    $0xfffffffffffffb78,%rsp
+0x55c66ba3a5f4:  jmpq   *%rsi
+0x55c66ba3a5f6:  xor    %eax,%eax
+0x55c66ba3a5f8:  add    $0x488,%rsp
+0x55c66ba3a5ff:  pop    %r15
+0x55c66ba3a601:  pop    %r14
+0x55c66ba3a603:  pop    %r13
+0x55c66ba3a605:  pop    %r12
+0x55c66ba3a607:  pop    %rbx
+0x55c66ba3a608:  pop    %rbp
+0x55c66ba3a609:  retq   
+
+----------------
+IN: 
+0x000100b8:  e3a03004      mov	r3, #4	; 0x4
+0x000100bc:  b0811002      addlt	r1, r1, r2
+0x000100c0:  e0422001      sub	r2, r2, r1
+0x000100c4:  c0411002      subgt	r1, r1, r2
+0x000100c8:  e0822001      add	r2, r2, r1
+0x000100cc:  e2433001      sub	r3, r3, #1	; 0x1
+0x000100d0:  e3530000      cmp	r3, #0	; 0x0
+0x000100d4:  1afffff8      bne	0x100bc
+
+Most popular argument: r2 
+OP after optimization and liveness analysis:
+>>>>>>>>>>>>>>>>>>
+ ld_i32 tmp5,env,$0xffffffffffffffec              dead: 1
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,lt,$L0                      dead: 0 1
+>>>>>>>>>>>>>>>>>>
+
+ ---- 000100b8 00000000 00000000
+ movi_i32 tmp5,$0x4
+ mov_i32 r3,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100bc 00000000 00000000
+ xor_i32 tmp5,VF,NF                               dead: 1 2
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,ge,$L1                      dead: 0 1
+>>>>>>>>>>>>>>>>>>
+ add_i32 tmp6,r1,r2                               dead: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1
+>>>>>>>>>>>>>>>>>>
+ set_label $L1
+
+ ---- 000100c0 00000000 00000000
+ sub_i32 tmp6,r2,r1                               dead: 2
+ mov_i32 r2,tmp6                                  sync: 0  dead: 1
+
+ ---- 000100c4 00000000 00000000
+ xor_i32 tmp5,VF,NF                               dead: 1 2
+ movi_i32 tmp6,$0x1f
+ sar_i32 tmp5,tmp5,tmp6                           dead: 1 2
+ andc_i32 tmp5,ZF,tmp5                            dead: 1 2
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,eq,$L2                      dead: 0 1
+>>>>>>>>>>>>>>>>>>
+ sub_i32 tmp6,r1,r2                               dead: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1
+>>>>>>>>>>>>>>>>>>
+ set_label $L2
+
+ ---- 000100c8 00000000 00000000
+ add_i32 tmp6,r2,r1                               dead: 2
+ mov_i32 r2,tmp6                                  sync: 0  dead: 0 1
+
+ ---- 000100cc 00000000 00000000
+ movi_i32 tmp5,$0x1
+ sub_i32 tmp6,r3,tmp5                             dead: 1 2
+ mov_i32 r3,tmp6                                  sync: 0  dead: 1
+
+ ---- 000100d0 00000000 00000000
+ mov_i32 NF,r3                                    sync: 0  dead: 1
+ mov_i32 ZF,NF                                    sync: 0  dead: 1
+ movi_i32 CF,$0x1                                 sync: 0  dead: 0
+ movi_i32 VF,$0x0                                 sync: 0  dead: 0
+
+ ---- 000100d4 00000000 00000000
+ movi_i32 tmp5,$0x0
+ brcond_i32 ZF,tmp5,eq,$L3                        dead: 0 1
+>>>>>>>>>>>>>>>>>>
+ goto_tb $0x0
+ movi_i32 pc,$0x100bc                             sync: 0  dead: 0
+ exit_tb $0x55c66ba3a640
+>>>>>>>>>>>>>>>>>>
+ set_label $L3
+ goto_tb $0x1
+ movi_i32 pc,$0x100d8                             sync: 0  dead: 0
+ exit_tb $0x55c66ba3a641
+>>>>>>>>>>>>>>>>>>
+ set_label $L0
+ exit_tb $0x55c66ba3a643
+>>>>>>>>>>>>>>>>>>
+
+OUT: [size=252]
+0x55c66ba3a6c0:  mov    -0x14(%r14),%ebp
+0x55c66ba3a6c4:  test   %ebp,%ebp
+0x55c66ba3a6c6:  jl     0x55c66ba3a7b0
+0x55c66ba3a6cc:  movl   $0x4,0xc(%r14)
+0x55c66ba3a6d4:  mov    0x204(%r14),%ebp
+0x55c66ba3a6db:  mov    0x208(%r14),%ebx
+0x55c66ba3a6e2:  xor    %ebx,%ebp
+0x55c66ba3a6e4:  test   %ebp,%ebp
+0x55c66ba3a6e6:  jge    0x55c66ba3a6fa
+0x55c66ba3a6ec:  mov    0x4(%r14),%ebp
+0x55c66ba3a6f0:  mov    0x8(%r14),%ebx
+0x55c66ba3a6f4:  add    %ebx,%ebp
+0x55c66ba3a6f6:  mov    %ebp,0x4(%r14)
+0x55c66ba3a6fa:  mov    %ebx,%ebp
+0x55c66ba3a6fc:  mov    0x4(%r14),%r12d
+0x55c66ba3a700:  sub    %r12d,%ebp
+0x55c66ba3a703:  mov    %ebp,0x8(%r14)
+0x55c66ba3a707:  mov    0x204(%r14),%ebx
+0x55c66ba3a70e:  mov    0x208(%r14),%r12d
+0x55c66ba3a715:  xor    %r12d,%ebx
+0x55c66ba3a718:  sar    $0x1f,%ebx
+0x55c66ba3a71b:  mov    0x20c(%r14),%r12d
+0x55c66ba3a722:  andn   %r12d,%ebx,%ebx
+0x55c66ba3a727:  test   %ebx,%ebx
+0x55c66ba3a729:  je     0x55c66ba3a739
+0x55c66ba3a72f:  mov    0x4(%r14),%ebx
+
+0x55c66ba3a733:  sub    %ebp,%ebx
+0x55c66ba3a735:  mov    %ebx,0x4(%r14)
+
+0x55c66ba3a739:  mov    0x4(%r14),%ebx
+0x55c66ba3a73d:  add    %ebp,%ebx
+0x55c66ba3a73f:  mov    %ebx,0x8(%r14)
+0x55c66ba3a743:  mov    0xc(%r14),%ebp
+0x55c66ba3a747:  dec    %ebp
+0x55c66ba3a749:  mov    %ebp,0xc(%r14)
+0x55c66ba3a74d:  mov    %ebp,0x208(%r14)
+0x55c66ba3a754:  mov    %ebp,0x20c(%r14)
+0x55c66ba3a75b:  movl   $0x1,0x200(%r14)
+0x55c66ba3a766:  movl   $0x0,0x204(%r14)
+0x55c66ba3a771:  test   %ebp,%ebp
+0x55c66ba3a773:  je     0x55c66ba3a794
+0x55c66ba3a779:  xchg   %ax,%ax
+0x55c66ba3a77b:  jmpq   0x55c66ba3a780
+0x55c66ba3a780:  movl   $0x100bc,0x3c(%r14)
+0x55c66ba3a788:  lea    -0x14f(%rip),%rax        # 0x55c66ba3a640
+0x55c66ba3a78f:  jmpq   0x55c66ba3a5f8
+0x55c66ba3a794:  xchg   %ax,%ax
+0x55c66ba3a797:  jmpq   0x55c66ba3a79c
+0x55c66ba3a79c:  movl   $0x100d8,0x3c(%r14)
+0x55c66ba3a7a4:  lea    -0x16a(%rip),%rax        # 0x55c66ba3a641
+0x55c66ba3a7ab:  jmpq   0x55c66ba3a5f8
+0x55c66ba3a7b0:  lea    -0x174(%rip),%rax        # 0x55c66ba3a643
+0x55c66ba3a7b7:  jmpq   0x55c66ba3a5f8
+
+R00=00000000 R01=fffef3c6 R02=00000000 R03=00000000
+R04=00000000 R05=00000000 R06=00000000 R07=00000000
+R08=00000000 R09=00000000 R10=000200fc R11=00000000
+R12=00000000 R13=fffef250 R14=00000000 R15=000100b8
+PSR=00000010 ---- A usr32
+----------------
+IN: 
+0x000100bc:  b0811002      addlt	r1, r1, r2
+0x000100c0:  e0422001      sub	r2, r2, r1
+0x000100c4:  c0411002      subgt	r1, r1, r2
+0x000100c8:  e0822001      add	r2, r2, r1
+0x000100cc:  e2433001      sub	r3, r3, #1	; 0x1
+0x000100d0:  e3530000      cmp	r3, #0	; 0x0
+0x000100d4:  1afffff8      bne	0x100bc
+
+Most popular argument: r2 
+OP after optimization and liveness analysis:
+ ld_i32 tmp5,env,$0xffffffffffffffec              dead: 1
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,lt,$L0                      dead: 0 1
+
+ ---- 000100bc 00000000 00000000
+ xor_i32 tmp5,VF,NF                               dead: 1 2
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,ge,$L1                      dead: 0 1
+ add_i32 tmp6,r1,r2                               dead: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1
+ set_label $L1
+
+ ---- 000100c0 00000000 00000000
+ sub_i32 tmp6,r2,r1                               dead: 2
+ mov_i32 r2,tmp6                                  sync: 0  dead: 1
+
+ ---- 000100c4 00000000 00000000
+ xor_i32 tmp5,VF,NF                               dead: 1 2
+ movi_i32 tmp6,$0x1f
+ sar_i32 tmp5,tmp5,tmp6                           dead: 1 2
+ andc_i32 tmp5,ZF,tmp5                            dead: 1 2
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,eq,$L2                      dead: 0 1
+ sub_i32 tmp6,r1,r2                               dead: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1
+ set_label $L2
+
+ ---- 000100c8 00000000 00000000
+ add_i32 tmp6,r2,r1                               dead: 2
+ mov_i32 r2,tmp6                                  sync: 0  dead: 0 1
+
+ ---- 000100cc 00000000 00000000
+ movi_i32 tmp5,$0x1
+ sub_i32 tmp6,r3,tmp5                             dead: 1 2
+ mov_i32 r3,tmp6                                  sync: 0  dead: 1
+
+ ---- 000100d0 00000000 00000000
+ mov_i32 NF,r3                                    sync: 0  dead: 1
+ mov_i32 ZF,NF                                    sync: 0  dead: 1
+ movi_i32 CF,$0x1                                 sync: 0  dead: 0
+ movi_i32 VF,$0x0                                 sync: 0  dead: 0
+
+ ---- 000100d4 00000000 00000000
+ movi_i32 tmp5,$0x0
+ brcond_i32 ZF,tmp5,eq,$L3                        dead: 0 1
+ goto_tb $0x0
+ movi_i32 pc,$0x100bc                             sync: 0  dead: 0
+ exit_tb $0x55c66ba3a800
+ set_label $L3
+ goto_tb $0x1
+ movi_i32 pc,$0x100d8                             sync: 0  dead: 0
+ exit_tb $0x55c66ba3a801
+ set_label $L0
+ exit_tb $0x55c66ba3a803
+
+OUT: [size=244]
+0x55c66ba3a880:  mov    -0x14(%r14),%ebp
+0x55c66ba3a884:  test   %ebp,%ebp
+0x55c66ba3a886:  jl     0x55c66ba3a968
+0x55c66ba3a88c:  mov    0x204(%r14),%ebp
+0x55c66ba3a893:  mov    0x208(%r14),%ebx
+0x55c66ba3a89a:  xor    %ebx,%ebp
+0x55c66ba3a89c:  test   %ebp,%ebp
+0x55c66ba3a89e:  jge    0x55c66ba3a8b2
+0x55c66ba3a8a4:  mov    0x4(%r14),%ebp
+0x55c66ba3a8a8:  mov    0x8(%r14),%ebx
+0x55c66ba3a8ac:  add    %ebx,%ebp
+0x55c66ba3a8ae:  mov    %ebp,0x4(%r14)
+0x55c66ba3a8b2:  mov    %ebx,%ebp
+0x55c66ba3a8b4:  mov    0x4(%r14),%r12d
+0x55c66ba3a8b8:  sub    %r12d,%ebp
+0x55c66ba3a8bb:  mov    %ebp,0x8(%r14)
+0x55c66ba3a8bf:  mov    0x204(%r14),%ebx
+0x55c66ba3a8c6:  mov    0x208(%r14),%r12d
+0x55c66ba3a8cd:  xor    %r12d,%ebx
+0x55c66ba3a8d0:  sar    $0x1f,%ebx
+0x55c66ba3a8d3:  mov    0x20c(%r14),%r12d
+0x55c66ba3a8da:  andn   %r12d,%ebx,%ebx
+0x55c66ba3a8df:  test   %ebx,%ebx
+0x55c66ba3a8e1:  je     0x55c66ba3a8f1
+0x55c66ba3a8e7:  mov    0x4(%r14),%ebx
+0x55c66ba3a8eb:  sub    %ebp,%ebx
+0x55c66ba3a8ed:  mov    %ebx,0x4(%r14)
+0x55c66ba3a8f1:  mov    0x4(%r14),%ebx
+0x55c66ba3a8f5:  add    %ebp,%ebx
+0x55c66ba3a8f7:  mov    %ebx,0x8(%r14)
+0x55c66ba3a8fb:  mov    0xc(%r14),%ebp
+0x55c66ba3a8ff:  dec    %ebp
+0x55c66ba3a901:  mov    %ebp,0xc(%r14)
+0x55c66ba3a905:  mov    %ebp,0x208(%r14)
+0x55c66ba3a90c:  mov    %ebp,0x20c(%r14)
+0x55c66ba3a913:  movl   $0x1,0x200(%r14)
+0x55c66ba3a91e:  movl   $0x0,0x204(%r14)
+0x55c66ba3a929:  test   %ebp,%ebp
+0x55c66ba3a92b:  je     0x55c66ba3a94c
+0x55c66ba3a931:  xchg   %ax,%ax
+0x55c66ba3a933:  jmpq   0x55c66ba3a938
+0x55c66ba3a938:  movl   $0x100bc,0x3c(%r14)
+0x55c66ba3a940:  lea    -0x147(%rip),%rax        # 0x55c66ba3a800
+0x55c66ba3a947:  jmpq   0x55c66ba3a5f8
+0x55c66ba3a94c:  xchg   %ax,%ax
+0x55c66ba3a94f:  jmpq   0x55c66ba3a954
+0x55c66ba3a954:  movl   $0x100d8,0x3c(%r14)
+0x55c66ba3a95c:  lea    -0x162(%rip),%rax        # 0x55c66ba3a801
+0x55c66ba3a963:  jmpq   0x55c66ba3a5f8
+0x55c66ba3a968:  lea    -0x16c(%rip),%rax        # 0x55c66ba3a803
+0x55c66ba3a96f:  jmpq   0x55c66ba3a5f8
+
+R00=00000000 R01=fffde77c R02=fffef3c6 R03=00000003
+R04=00000000 R05=00000000 R06=00000000 R07=00000000
+R08=00000000 R09=00000000 R10=000200fc R11=00000000
+R12=00000000 R13=fffef250 R14=00000000 R15=000100bc
+PSR=20000010 --C- A usr32
+R00=00000000 R01=fffbcef5 R02=fffde77c R03=00000002
+R04=00000000 R05=00000000 R06=00000000 R07=00000000
+R08=00000000 R09=00000000 R10=000200fc R11=00000000
+R12=00000000 R13=fffef250 R14=00000000 R15=000100bc
+PSR=20000010 --C- A usr32
+----------------
+IN: 
+0x000100d8:  e3a00001      mov	r0, #1	; 0x1
+0x000100dc:  e59f1014      ldr	r1, [pc, #20]	; 0x100f8
+0x000100e0:  e3a0200c      mov	r2, #12	; 0xc
+0x000100e4:  e3a07004      mov	r7, #4	; 0x4
+0x000100e8:  ef000000      svc	0x00000000
+
+Most popular argument: env 
+OP after optimization and liveness analysis:
+ ld_i32 tmp5,env,$0xffffffffffffffec
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,lt,$L0                      dead: 0 1
+
+ ---- 000100d8 00000000 00000000
+ movi_i32 tmp5,$0x1
+ mov_i32 r0,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100dc 00000000 00000e04
+ movi_i32 tmp5,$0x100f8
+ mov_i32 tmp7,tmp5                                dead: 1
+ qemu_ld_i32 tmp6,tmp7,leul,0                     dead: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1
+
+ ---- 000100e0 00000000 00000000
+ movi_i32 tmp5,$0xc
+ mov_i32 r2,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100e4 00000000 00000000
+ movi_i32 tmp5,$0x4
+ mov_i32 r7,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100e8 00000000 00000000
+ movi_i32 pc,$0x100ec                             sync: 0  dead: 0
+ movi_i32 tmp5,$0x2
+ movi_i32 tmp6,$0x46000000
+ movi_i32 tmp7,$0x1
+ call exception_with_syndrome,$0x0,$0,env,tmp5,tmp6,tmp7  dead: 0 1 2 3
+ set_label $L0
+ exit_tb $0x55c66ba3a9c3
+
+OUT: [size=92]
+0x55c66ba3aa40:  mov    -0x14(%r14),%ebp
+0x55c66ba3aa44:  test   %ebp,%ebp
+0x55c66ba3aa46:  jl     0x55c66ba3aa90
+0x55c66ba3aa4c:  movl   $0x1,(%r14)
+0x55c66ba3aa53:  mov    $0x100f8,%ebp
+0x55c66ba3aa58:  addr32 mov %gs:0x0(%ebp),%ebp
+0x55c66ba3aa5d:  mov    %ebp,0x4(%r14)
+0x55c66ba3aa61:  movl   $0xc,0x8(%r14)
+0x55c66ba3aa69:  movl   $0x4,0x1c(%r14)
+0x55c66ba3aa71:  movl   $0x100ec,0x3c(%r14)
+0x55c66ba3aa79:  mov    %r14,%rdi
+0x55c66ba3aa7c:  mov    $0x2,%esi
+0x55c66ba3aa81:  mov    $0x46000000,%edx
+0x55c66ba3aa86:  mov    $0x1,%ecx
+0x55c66ba3aa8b:  callq  0x55c66b68e608
+0x55c66ba3aa90:  lea    -0xd4(%rip),%rax        # 0x55c66ba3a9c3
+0x55c66ba3aa97:  jmpq   0x55c66ba3a5f8
+
+R00=00000000 R01=ffef3bcf R02=fff79de8 R03=00000000
+R04=00000000 R05=00000000 R06=00000000 R07=00000000
+R08=00000000 R09=00000000 R10=000200fc R11=00000000
+R12=00000000 R13=fffef250 R14=00000000 R15=000100d8
+PSR=60000010 -ZC- A usr32
+----------------
+IN: 
+0x000100ec:  e3a00000      mov	r0, #0	; 0x0
+0x000100f0:  e3a07001      mov	r7, #1	; 0x1
+0x000100f4:  ef000000      svc	0x00000000
+
+Most popular argument: env 
+OP after optimization and liveness analysis:
+ ld_i32 tmp5,env,$0xffffffffffffffec
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,lt,$L0                      dead: 0 1
+
+ ---- 000100ec 00000000 00000000
+ movi_i32 tmp5,$0x0
+ mov_i32 r0,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100f0 00000000 00000000
+ movi_i32 tmp5,$0x1
+ mov_i32 r7,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100f4 00000000 00000000
+ movi_i32 pc,$0x100f8                             sync: 0  dead: 0
+ movi_i32 tmp5,$0x2
+ movi_i32 tmp6,$0x46000000
+ movi_i32 tmp7,$0x1
+ call exception_with_syndrome,$0x0,$0,env,tmp5,tmp6,tmp7  dead: 0 1 2 3
+ set_label $L0
+ exit_tb $0x55c66ba3aac3
+
+OUT: [size=70]
+0x55c66ba3ab40:  mov    -0x14(%r14),%ebp
+0x55c66ba3ab44:  test   %ebp,%ebp
+0x55c66ba3ab46:  jl     0x55c66ba3ab7a
+0x55c66ba3ab4c:  movl   $0x0,(%r14)
+0x55c66ba3ab53:  movl   $0x1,0x1c(%r14)
+0x55c66ba3ab5b:  movl   $0x100f8,0x3c(%r14)
+0x55c66ba3ab63:  mov    %r14,%rdi
+0x55c66ba3ab66:  mov    $0x2,%esi
+0x55c66ba3ab6b:  mov    $0x46000000,%edx
+0x55c66ba3ab70:  mov    $0x1,%ecx
+0x55c66ba3ab75:  callq  0x55c66b68e608
+0x55c66ba3ab7a:  lea    -0xbe(%rip),%rax        # 0x55c66ba3aac3
+0x55c66ba3ab81:  jmpq   0x55c66ba3a5f8
+
+R00=0000000c R01=000200fc R02=0000000c R03=00000000
+R04=00000000 R05=00000000 R06=00000000 R07=00000004
+R08=00000000 R09=00000000 R10=000200fc R11=00000000
+R12=00000000 R13=fffef250 R14=00000000 R15=000100ec
+PSR=60000010 -ZC- A usr32
