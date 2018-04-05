@@ -1,0 +1,61 @@
+Most popular argument: r1 
+OP after optimization and liveness analysis:
+ ld_i32 tmp5,env,$0xffffffffffffffec              dead: 1
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,lt,$L0                      dead: 0 1
+
+ ---- 000100b8 00000000 00000000
+ movi_i32 tmp5,$0x4
+ mov_i32 r3,tmp5                                  sync: 0  dead: 0 1
+
+ ---- 000100bc 00000000 00000000
+ xor_i32 tmp5,VF,NF                               dead: 1 2
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,ge,$L1                      dead: 0 1
+ add_i32 tmp6,r1,r2                               dead: 1 2 reg: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1 reg: 0
+ set_label $L1
+
+ ---- 000100c0 00000000 00000000
+ sub_i32 tmp6,r2,r1                               dead: 1 2 reg: 2
+ mov_i32 r2,tmp6                                  sync: 0  dead: 0 1
+
+ ---- 000100c4 00000000 00000000
+ xor_i32 tmp5,VF,NF                               dead: 1 2
+ movi_i32 tmp6,$0x1f
+ sar_i32 tmp5,tmp5,tmp6                           dead: 1 2
+ not_i32 tmp6,tmp5                                dead: 1
+ and_i32 tmp5,ZF,tmp6                             dead: 1 2
+ movi_i32 tmp6,$0x0
+ brcond_i32 tmp5,tmp6,eq,$L2                      dead: 0 1
+ sub_i32 tmp6,r1,r2                               dead: 1 2 reg: 1
+ mov_i32 r1,tmp6                                  sync: 0  dead: 0 1 reg: 0
+ set_label $L2
+
+ ---- 000100c8 00000000 00000000
+ add_i32 tmp6,r2,r1                               dead: 1 2 reg: 2
+ mov_i32 r2,tmp6                                  sync: 0  dead: 0 1
+
+ ---- 000100cc 00000000 00000000
+ movi_i32 tmp5,$0x1
+ sub_i32 tmp6,r3,tmp5                             dead: 1 2
+ mov_i32 r3,tmp6                                  sync: 0  dead: 1
+
+ ---- 000100d0 00000000 00000000
+ mov_i32 NF,r3                                    sync: 0  dead: 1
+ mov_i32 ZF,NF                                    sync: 0  dead: 1
+ movi_i32 CF,$0x1                                 sync: 0  dead: 0
+ movi_i32 VF,$0x0                                 sync: 0  dead: 0
+
+ ---- 000100d4 00000000 00000000
+ movi_i32 tmp5,$0x0
+ brcond_i32 ZF,tmp5,eq,$L3                        dead: 0 1
+ goto_tb $0x0
+ movi_i32 pc,$0x100bc                             sync: 0  dead: 0
+ exit_tb $0x5555559f2600
+ set_label $L3
+ goto_tb $0x1
+ movi_i32 pc,$0x100d8                             sync: 0  dead: 0
+ exit_tb $0x5555559f2601
+ set_label $L0
+ exit_tb $0x5555559f2603

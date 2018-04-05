@@ -607,6 +607,7 @@ typedef struct TCGTempSet {
 #define SYNC_ARG  1
 typedef uint16_t TCGLifeData;
 
+
 /* The layout here is designed to avoid crossing of a 32-bit boundary.
    If we do so, gcc adds padding, expanding the size to 12.  */
 typedef struct TCGOp {
@@ -649,8 +650,7 @@ typedef struct AAOp {
     // The best place to store this uint16_t would have been the TCGOp struct
     // but that struct is bit aligned for performance, so to avoid damaging
     // the work of others we will go the long way and keep meta-data on each TCGOp
-    uint16_t reg_life;
-    TCGOp *op;
+    uint16_t life;
 } AAOp;
 
 struct TCGContext {
@@ -679,7 +679,7 @@ struct TCGContext {
     // choose a temporary (local temp or global) to be placed on the register and kept there
     // How is this similar to defining fixed_reg? tcg/README mentions that putting globals
     // on fixed register is bad for speed, why?
-    AAVar aa_drag_through;
+    AAOp *global_reg_alloc_hints;
 
 #ifdef CONFIG_PROFILER
     /* profiling info */
