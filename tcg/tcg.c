@@ -2333,7 +2333,7 @@ static void temp_save(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs)
        in memory. Keep an tcg_debug_assert for safety.
        Some special values must survive BB_END, that is controlled by
        global reg alloc algorithm */
-    tcg_debug_assert(ts->val_type == TEMP_VAL_MEM || ts->fixed_reg || ts->val_type == TEMP_VAL_REG);
+    tcg_debug_assert(ts->val_type == TEMP_VAL_MEM || ts->fixed_reg || ts->mem_coherent);
 }
 
 /* save globals to their canonical location and assume they can be
@@ -2371,6 +2371,10 @@ static void tcg_reg_alloc_bb_end(TCGContext *s, TCGRegSet allocated_regs)
 
     for (i = s->nb_globals; i < s->nb_temps; i++) {
         TCGTemp *ts = &s->temps[i];
+        if (ts == s->drag_through.ts) {
+            /* skip debug asserts at end of basic block for the drag_through temp */
+            continue;
+        }
         if (ts->temp_local) {
             temp_save(s, ts, allocated_regs);
         } else {
@@ -2501,6 +2505,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
     const TCGArgConstraint *arg_ct;
     TCGTemp *ts;
     /* we create a new array of arguments */
+    // layout is oargs, followed by iargs, followed by cargs
     TCGArg new_args[TCG_MAX_OP_ARGS];
     int const_args[TCG_MAX_OP_ARGS];
 
@@ -2517,20 +2522,29 @@ static void tcg_reg_alloc_op(TCGContext *s,
     o_allocated_regs = s->reserved_regs;
 
     /* satisfy input constraints */ 
+    // loop over input arguments
     for(k = 0; k < nb_iargs; k++) {
+        // get index of next argument in sorted order
         i = def->sorted_args[nb_oargs + k];
+        // with index get the index of the temporary that is the argument
         arg = args[i];
+        //get the constraints for the argument number i of current instruction
         arg_ct = &def->args_ct[i];
+        // get the temporary that has the argument value
         ts = &s->temps[arg];
 
         if (ts->val_type == TEMP_VAL_CONST
             && tcg_target_const_match(ts->val, ts->type, arg_ct)) {
-            /* constant is OK for instruction */
+            /* constant is OK for this instruction */
+            // turn on const arg at this position
             const_args[i] = 1;
+            // copy constant directly into args
             new_args[i] = ts->val;
             goto iarg_end;
         }
 
+        // else if it was not a const, or if const is not ok for this instruction
+        // we load the temporary into a register
         temp_load(s, ts, arg_ct->u.regs, i_allocated_regs);
 
         if (arg_ct->ct & TCG_CT_IALIAS) {
@@ -2545,7 +2559,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
                    a new register and move it */
                 // we do not need to check IS_DEAD_ARG_ALLOC here,
                 // because liveness is more general case than reg alloc
-                if (!IS_DEAD_ARG(i)) {
+                if (!IS_DEAD_ARG(i) || !IS_DEAD_ARG_ALLOC(i)) {
                     goto allocate_in_reg;
                 }
                 /* check if the current register has already been allocated
@@ -2577,7 +2591,8 @@ static void tcg_reg_alloc_op(TCGContext *s,
     iarg_end: ;
     }
     
-    /* mark dead temporaries and free the associated registers */
+    /* mark dead temporaries and free the associated registers
+     * this is still only concerning the input arguments */
     for (i = nb_oargs; i < nb_oargs + nb_iargs; i++) {
         if (IS_DEAD_ARG(i) && IS_DEAD_ARG_ALLOC(i)) {
             temp_dead(s, &s->temps[args[i]]);
@@ -2954,6 +2969,7 @@ static void aa_global_reg_alloc_pass(TCGContext *s)
     int oi, oi_prev;
 
     AAVar drag_through = tcg_find_most_used_var(s);
+    s->drag_through = drag_through;
     qemu_log("Most popular argument: %s \n", drag_through.name);
 
     const int LEADING_UP_TO_BB_END = 1;
@@ -2984,13 +3000,6 @@ static void aa_global_reg_alloc_pass(TCGContext *s)
 
 
         switch (opc) {
-        case INDEX_op_goto_tb:
-        case INDEX_op_exit_tb:
-            // when we meet exit_tb instruction, we are in the exiting block
-            // how can we distinguish BB_END and TB_END ? right now we do it
-            // via state
-            // state = LEADING_UP_TO_TB_FINISH;
-            break;
         case INDEX_op_call:
             // for call we agree with liveness
             // state = LEADING_UP_TO_CALL;
@@ -3215,6 +3224,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         case INDEX_op_call:
             tcg_reg_alloc_call(s, op->callo, op->calli, args, arg_life, alloc_life);
             break;
+        case INDEX_op_exit_tb:
+        case INDEX_op_goto_tb:
+            /* sync and mark dead the temp that we were dragging through */
+            // temp_sync(s, s->drag_through.ts, s->reserved_regs, 1);
+            /* fallthrough */
         default:
             /* Sanity check that we've not introduced any unhandled opcodes. */
             tcg_debug_assert(tcg_op_supported(opc));

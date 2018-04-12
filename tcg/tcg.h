@@ -680,6 +680,7 @@ struct TCGContext {
     // How is this similar to defining fixed_reg? tcg/README mentions that putting globals
     // on fixed register is bad for speed, why?
     AAOp *global_reg_alloc_hints;
+    AAVar drag_through;
 
 #ifdef CONFIG_PROFILER
     /* profiling info */
