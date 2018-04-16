@@ -1349,8 +1349,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 #endif
 
 #ifdef DEBUG_DISAS
-    if (qemu_loglevel_mask(CPU_LOG_TB_OUT_ASM) &&
-        qemu_log_in_addr_range(tb->pc)) {
+    if (qemu_log_in_addr_range(tb->pc)) {
         qemu_log_lock();
         qemu_log("OUT: [size=%d]\n", gen_code_size);
         if (tcg_ctx.data_gen_ptr) {
