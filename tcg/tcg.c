@@ -1426,7 +1426,7 @@ void tcg_dump_ops(TCGContext *s)
             }
         }
 
-        unsigned alloc_life = s->global_reg_alloc_hints[oi].life;
+        unsigned alloc_life = s->ga_hints[oi].life;
         if (alloc_life) {
             // only consider the DEAD, do not care about SYNC
             unsigned life = op->life;
@@ -2376,7 +2376,7 @@ static void tcg_reg_alloc_bb_end(TCGContext *s, TCGRegSet allocated_regs)
 
     for (i = s->nb_globals; i < s->nb_temps; i++) {
         TCGTemp *ts = &s->temps[i];
-        if (ts == s->drag_through.ts) {
+        if (ts->fixed_reg > 0) {
             /* skip debug asserts at end of basic block for the drag_through temp */
             continue;
         }
@@ -2867,7 +2867,7 @@ static GAVar* ga_lookup_meta_in_array(TCGTemp* needle, GAVar* heap, int heap_siz
     return NULL;
 }
 
-static GAVar tcg_find_most_used_vars(TCGContext *s) {
+static void tcg_find_most_used_vars(TCGContext *s) {
     int oi;
 
     /* ARTEM:
@@ -2967,17 +2967,30 @@ static GAVar tcg_find_most_used_vars(TCGContext *s) {
         }
     }
 
-    // find the variable with maximum number of counts
-    // use top15 because the 16th reg is used for env
-    GAVar max_var = { .count = -1, .ts = NULL };
+    // find the variables with maximum number of counts
+    // set all to zero
+    memset(s->drag_through, 0, sizeof(GAVar) * REGS_FOR_GLOBAL_ALLOC);
+    // for each variable
     for (int i=0; i < metas_len; i++) {
-        if (metas[i].count > max_var.count) {
-            max_var = metas[i];
+        // find current smallest occurence in drag_through
+        int min_known_idx = 0;
+        for (int k=0; k < REGS_FOR_GLOBAL_ALLOC; k++) {
+            if (s->drag_through[k].count < s->drag_through[min_known_idx].count) {
+                min_known_idx = k;
+            }
+        }
+        // check if current var is larger
+        if (metas[i].count > s->drag_through[min_known_idx].count) {
+            s->drag_through[min_known_idx] = metas[i];
         }
     }
 
-    // mark the special variable that should not be killed on block end
-    return max_var;
+    for (s->drag_through_len = 0
+        ; (s->drag_through_len < REGS_FOR_GLOBAL_ALLOC) && (s->drag_through[s->drag_through_len].count > 0)
+        ; s->drag_through_len++
+        ) {
+        continue;
+    }
 }
 
 // run this after liveness analysis
@@ -2988,9 +3001,13 @@ static void ga_global_reg_alloc_pass(TCGContext *s)
 {
     int oi, oi_prev;
 
-    GAVar drag_through = tcg_find_most_used_vars(s);
-    s->drag_through = drag_through;
-    qemu_log("popular arg: %s \n", drag_through.name);
+    tcg_find_most_used_vars(s);
+
+    qemu_log("popular args: ");
+    for (int i = 0; i < s->drag_through_len; i++) {
+        qemu_log("%s ", s->drag_through[i].name);
+    }
+    qemu_log("\n");
 
     s->exits_count = 0;
 
@@ -3010,19 +3027,59 @@ static void ga_global_reg_alloc_pass(TCGContext *s)
         oi_prev = op->prev;
 
         // this is the special sauce
-        GAOp * const op_reg_alloc = &s->global_reg_alloc_hints[oi];
+        GAOp * const op_reg_alloc = &s->ga_hints[oi];
         // start by setting it the same as liveness analysis
         op_reg_alloc->life = op->life;
 
         switch (opc) {
-        case INDEX_op_call:
-            // for call we agree with liveness
-            break;
-        case INDEX_op_exit_tb:
-            s->exits_count++;
-            break;
-        default:
-            break;
+            case INDEX_op_call:
+                // for call we agree with liveness
+                break;
+            case INDEX_op_exit_tb:
+                s->exits_count++;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+// find free regs and claim them
+static void ga_load_drag_through_on_regs(TCGContext *s) {
+    int k;
+
+    for (k=0; k < s->drag_through_len; k++) {
+        // load the special variables
+        TCGTemp *ts = s->drag_through[k].ts;
+        /* load the drag_through variable into register */
+        temp_load(s, ts, tcg_target_available_regs[ts->type], s->reserved_regs);
+        /* mark the reg as fixed after this variable (this stops mov propagation) */
+        ts->fixed_reg = 1;
+        tcg_regset_set_reg(s->reserved_regs, ts->reg);
+    }
+}
+
+static void ga_spill_all_regs(TCGContext *s, bool must_free_regs) {
+    int k;
+
+    for (k = 0; k < s->drag_through_len; k++) {
+        /* sync and mark dead the temp that we were dragging through */
+        TCGTemp *ts = s->drag_through[k].ts;
+
+        /* emit code to sync with memory
+           trick qemu to force the sync */
+        ts->mem_coherent = 0;
+        ts->fixed_reg = 0;
+        temp_sync(s, ts, s->reserved_regs, 0);
+        ts->fixed_reg = 1;
+
+        if (must_free_regs) {
+            /* remove the claim on register */
+            tcg_regset_reset_reg(s->reserved_regs, ts->reg);
+            ts->fixed_reg = 0;
+
+            /* free the reg used for this variable (else x86 backend does not do temp_load) */
+            temp_free_or_dead(s, ts, -1);
         }
     }
 }
@@ -3103,10 +3160,8 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         // array with meta information about each TCGOp the meta
         // hints register allocator when to emit load/store
         // instruction and when to free/keep register
-        GAOp *op_args_alloc_hint = tcg_malloc(sizeof(GAOp) * OPC_BUF_SIZE);
-        memset(&op_args_alloc_hint[0], 0, sizeof(GAOp) * OPC_BUF_SIZE);
-        s->global_reg_alloc_hints = op_args_alloc_hint;
-
+        s->ga_hints = tcg_malloc(sizeof(GAOp) * OPC_BUF_SIZE);
+        memset(s->ga_hints, 0, sizeof(GAOp) * OPC_BUF_SIZE);
         ga_global_reg_alloc_pass(s);
     }
 
@@ -3146,7 +3201,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         TCGOpcode opc = op->opc;
         const TCGOpDef *def = &tcg_op_defs[opc];
         TCGLifeData arg_life = op->life;
-        TCGLifeData alloc_life = s->global_reg_alloc_hints[oi].life;
+        TCGLifeData alloc_life = s->ga_hints[oi].life;
 
         oi_next = op->next;
 #ifdef CONFIG_PROFILER
@@ -3163,16 +3218,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             tcg_reg_alloc_movi(s, args, arg_life, alloc_life);
             break;
         case INDEX_op_insn_start:
-            if (!has_global_reg_alloc_init) {
-                 has_global_reg_alloc_init = true;
-                // do it here, so we dont mess up TCG function prolog
-                // load the special variables
-                TCGTemp *ts = s->drag_through.ts;
-                /* load the drag_through variable into register */
-                temp_load(s, ts, tcg_target_available_regs[ts->type], s->reserved_regs);
-                /* mark the reg as fixed after this variable (this stops mov propagation) */
-                ts->fixed_reg = 1;
-                tcg_regset_set_reg(s->reserved_regs, ts->reg);
+            if (! has_global_reg_alloc_init) {
+                // emit load instructions in first op_insn_start
+                // so we dont mess up TCG function prolog
+                has_global_reg_alloc_init = true;
+                ga_load_drag_through_on_regs(s);
             }
             if (num_insns >= 0) {
                 s->gen_insn_end_off[num_insns] = tcg_current_code_size(s);
@@ -3196,30 +3246,18 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             tcg_out_label(s, arg_label(args[0]), s->code_ptr);
             break;
         case INDEX_op_call:
+            // before the call, sync and free regs
+            ga_spill_all_regs(s, true);
             tcg_reg_alloc_call(s, op->callo, op->calli, args, arg_life, alloc_life);
+            // after the call, realloc regs
+            ga_load_drag_through_on_regs(s);
             break;
         case INDEX_op_exit_tb:
-            {
-                /* sync and mark dead the temp that we were dragging through */
-                TCGTemp *ts = s->drag_through.ts;
-                /* emit code to sync with memory
-                trick qemu to force sync */
-                ts->mem_coherent = 0;
-                ts->fixed_reg = 0;
-                temp_sync(s, ts, s->reserved_regs, 0);
-                ts->fixed_reg = 1;
-                /* count exits */
-                s->exits_count--;
-                if (ts->reg && s->reg_to_temp[ts->reg] == ts && s->exits_count == 0) {
-                    /* after the last goto_tb/exit_tb is done, mark the var as free */
-                    /* remove the claim on register */
-                    tcg_regset_reset_reg(s->reserved_regs, ts->reg);
-                    ts->fixed_reg = 0;
-                    /* free the reg used for this variable (else x86 backend does not do temp_load) */
-                    temp_free_or_dead(s, ts, -1);
-                }
-            }
-            /* fallthrough so the exit_tb and goto_tb get proper treatement */
+            /* count exits */
+            s->exits_count--;
+            // only free regs if all the exit_tb have been processed
+            ga_spill_all_regs(s, s->exits_count == 0);
+            /* fallthrough so the exit_tb get proper treatement */
         default:
             /* Sanity check that we've not introduced any unhandled opcodes. */
             tcg_debug_assert(tcg_op_supported(opc));

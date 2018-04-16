@@ -607,6 +607,9 @@ typedef struct TCGTempSet {
 #define SYNC_ARG  1
 typedef uint16_t TCGLifeData;
 
+// number of registers to give away to global alloc algorithm
+#define REGS_FOR_GLOBAL_ALLOC (4)
+// #define REGS_FOR_GLOBAL_ALLOC (1)
 
 /* The layout here is designed to avoid crossing of a 32-bit boundary.
    If we do so, gcc adds padding, expanding the size to 12.  */
@@ -684,8 +687,9 @@ struct TCGContext {
     // choose a temporary (local temp or global) to be placed on the register and kept there
     // How is this similar to defining fixed_reg? tcg/README mentions that putting globals
     // on fixed register is bad for speed, why?
-    GAOp *global_reg_alloc_hints;
-    GAVar drag_through;
+    GAOp *ga_hints;
+    GAVar drag_through[REGS_FOR_GLOBAL_ALLOC];
+    int drag_through_len;
     int exits_count;
 
 #ifdef CONFIG_PROFILER
