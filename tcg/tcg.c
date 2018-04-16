@@ -1444,6 +1444,11 @@ void tcg_dump_ops(TCGContext *s)
             }
         }
         qemu_log("\n");
+
+        if (def->flags & TCG_OPF_BB_END) {
+            // end of basic block
+            qemu_log(">>>>>>>>>>>\n");
+        }
     }
 }
 
