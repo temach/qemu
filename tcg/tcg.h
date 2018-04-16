@@ -639,19 +639,24 @@ QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
 
 // ARTEM
 // Struct to hold meta information about a temporary (its name and count of its usage)
-typedef struct AAVar {
+typedef struct GAVar {
     char name[32];
     int count;
     TCGTemp *ts;
-} AAVar;
+} GAVar;
 
 // Struct to hold meta information about an op (reg alloc data on its arguments)
-typedef struct AAOp {
+typedef struct GAOp {
     // The best place to store this uint16_t would have been the TCGOp struct
     // but that struct is bit aligned for performance, so to avoid damaging
     // the work of others we will go the long way and keep meta-data on each TCGOp
     uint16_t life;
-} AAOp;
+} GAOp;
+
+typedef struct GALiveInterval {
+    int oi_start;
+    int oi_end;
+} GALiveInterval;
 
 struct TCGContext {
     uint8_t *pool_cur, *pool_end;
@@ -679,8 +684,9 @@ struct TCGContext {
     // choose a temporary (local temp or global) to be placed on the register and kept there
     // How is this similar to defining fixed_reg? tcg/README mentions that putting globals
     // on fixed register is bad for speed, why?
-    AAOp *global_reg_alloc_hints;
-    AAVar drag_through;
+    GAOp *global_reg_alloc_hints;
+    GAVar drag_through;
+    int exits_count;
 
 #ifdef CONFIG_PROFILER
     /* profiling info */

@@ -2488,6 +2488,10 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOpDef *def,
                                          allocated_regs, ots->indirect_base);
             }
             tcg_out_mov(s, otype, ots->reg, ts->reg);
+            // after move from dead var to fixed reg, we can kill dead var
+            if (IS_DEAD_ARG(1) && IS_DEAD_ARG_ALLOC(1)) {
+                temp_dead(s, ts);
+            }
         }
         ots->val_type = TEMP_VAL_REG;
         ots->mem_coherent = 0;
@@ -2833,12 +2837,12 @@ void tcg_dump_op_count(FILE *f, fprintf_function cpu_fprintf)
 }
 #endif
 
-//static char * aa_tcg_get_const_str_idx(TCGContext *s, char *buf, int buf_size, unsigned long int constant_value) {
+//static char * ga_tcg_get_const_str_idx(TCGContext *s, char *buf, int buf_size, unsigned long int constant_value) {
 //    snprintf(buf, buf_size, "$0x%" TCG_PRIlx, constant_value);
 //    return buf;
 //}
 
-static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *ts) {
+static char* ga_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTemp *ts) {
     // code taken from tcg_get_arg_str_ptr(s, buf, buf_size, t) function, only consider
     // global and local temporaries values as they both can survive basic blocks. Dont
     // consider temporaries, they only live inside one basic block.
@@ -2854,16 +2858,16 @@ static char* aa_get_name_for_temp(TCGContext *s, char* buf, int buf_size, TCGTem
     return NULL;
 }
 
-static AAVar* aa_search_tmp_in_array(const char* needle, AAVar* heap, int heap_size) {
+static GAVar* ga_lookup_meta_in_array(TCGTemp* needle, GAVar* heap, int heap_size) {
     for (int i=0; i < heap_size; i++) {
-        if (strcmp(needle, heap[i].name) == 0) {
+        if (heap[i].ts == needle) {
             return &heap[i];
         }
     }
     return NULL;
 }
 
-static AAVar tcg_find_most_used_var(TCGContext *s) {
+static GAVar tcg_find_most_used_vars(TCGContext *s) {
     int oi;
 
     /* ARTEM:
@@ -2882,10 +2886,10 @@ static AAVar tcg_find_most_used_var(TCGContext *s) {
      *
      * Loop through our buffer and firgure out which temp is used the most often.
      */
-    AAVar metas[128];
+    GAVar metas[128];
     int metas_len = 0;
 #ifdef DEBUG_DISAS
-    memset(&metas[0], 0, sizeof(AAVar) * 128);
+    memset(&metas[0], 0, sizeof(GAVar) * 128);
 #endif
 
     char buf[128];
@@ -2921,13 +2925,18 @@ static AAVar tcg_find_most_used_var(TCGContext *s) {
             k = 0;
             for (i = 0; i < nb_oargs; i++) {
                 t = &s->temps[args[k++]];
-                const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
-                if (! arg_name) {
+                if (t->fixed_reg) {
+                    /* do not consider globals that are already fixed_reg */
                     continue;
                 }
-                AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
+                const char* arg_name = ga_get_name_for_temp(s, buf, sizeof(buf), t);
+                if (! arg_name) {
+                    // not intereseting to us (it does not even have a proper name)
+                    continue;
+                }
+                GAVar* meta = ga_lookup_meta_in_array(t, metas, metas_len);
                 if (! meta) {
-                    AAVar new = {  .count = 0, .ts = t };
+                    GAVar new = {  .count = 0, .ts = t };
                     strcpy(new.name, arg_name);
                     metas[metas_len++] = new;
                 } else {
@@ -2937,13 +2946,18 @@ static AAVar tcg_find_most_used_var(TCGContext *s) {
 
             for (i = 0; i < nb_iargs; i++) {
                 t = &s->temps[args[k++]];
-                const char* arg_name = aa_get_name_for_temp(s, buf, sizeof(buf), t);
-                if (! arg_name) {
+                if (t->fixed_reg) {
+                    /* dont consider globals that are already fixed_reg */
                     continue;
                 }
-                AAVar* meta = aa_search_tmp_in_array(arg_name, metas, metas_len);
+                const char* arg_name = ga_get_name_for_temp(s, buf, sizeof(buf), t);
+                if (! arg_name) {
+                    // not intereseting to us (it does not even have a proper name)
+                    continue;
+                }
+                GAVar* meta = ga_lookup_meta_in_array(t, metas, metas_len);
                 if (! meta) {
-                    AAVar new = {  .count = 0, .ts = t };
+                    GAVar new = {  .count = 0, .ts = t };
                     strcpy(new.name, arg_name);
                     metas[metas_len++] = new;
                 } else {
@@ -2954,7 +2968,8 @@ static AAVar tcg_find_most_used_var(TCGContext *s) {
     }
 
     // find the variable with maximum number of counts
-    AAVar max_var = { .count = -1, .ts = NULL };
+    // use top15 because the 16th reg is used for env
+    GAVar max_var = { .count = -1, .ts = NULL };
     for (int i=0; i < metas_len; i++) {
         if (metas[i].count > max_var.count) {
             max_var = metas[i];
@@ -2969,104 +2984,46 @@ static AAVar tcg_find_most_used_var(TCGContext *s) {
 // we use liveness results and our own analysis to determine when to
 // emit tcg_out_st (to write temp to mem) or tcg_out_ld (to load temp
 // from mem to reg). With this we want to avoid excessive store/loads.
-static void aa_global_reg_alloc_pass(TCGContext *s)
+static void ga_global_reg_alloc_pass(TCGContext *s)
 {
     int oi, oi_prev;
 
-    AAVar drag_through = tcg_find_most_used_var(s);
+    GAVar drag_through = tcg_find_most_used_vars(s);
     s->drag_through = drag_through;
-    qemu_log("Most popular argument: %s \n", drag_through.name);
+    qemu_log("popular arg: %s \n", drag_through.name);
 
-    const int LEADING_UP_TO_BB_END = 1;
-    const int LEADING_UP_TO_MV_INTO = 2;
-    const int LEADING_UP_TO_CALL = 3;
-    const int LEADING_UP_TO_TB_FINISH = 4;
-
-    int state = LEADING_UP_TO_TB_FINISH;
+    s->exits_count = 0;
 
     // notice we start with opcode 0 and take his "prev" this
     // way we get not the start opcode but the end opcode
     // and we travel backwards
     for (oi = s->gen_op_buf[0].prev; oi != 0; oi = oi_prev) {
-        int i, nb_iargs, nb_oargs;
-        TCGArg arg;
+        // int i, nb_iargs, nb_oargs;
+        // TCGArg arg;
 
         TCGOp * const op = &s->gen_op_buf[oi];
-        TCGArg * const args = &s->gen_opparam_buf[op->args];
+        // TCGArg * const args = &s->gen_opparam_buf[op->args];
         TCGOpcode opc = op->opc;
-        const TCGOpDef *def = &tcg_op_defs[opc];
-        TCGLifeData arg_life = op->life;
+        // const TCGOpDef *def = &tcg_op_defs[opc];
+        // TCGLifeData arg_life = op->life;
 
         oi_prev = op->prev;
 
         // this is the special sauce
-        AAOp * const op_reg_alloc = &s->global_reg_alloc_hints[oi];
+        GAOp * const op_reg_alloc = &s->global_reg_alloc_hints[oi];
+        // start by setting it the same as liveness analysis
         op_reg_alloc->life = op->life;
-
 
         switch (opc) {
         case INDEX_op_call:
             // for call we agree with liveness
-            // state = LEADING_UP_TO_CALL;
             break;
-        case INDEX_op_insn_start:
+        case INDEX_op_exit_tb:
+            s->exits_count++;
             break;
         default:
-            /* XXX: optimize by hardcoding common cases (e.g. triadic ops) */
-            nb_iargs = def->nb_iargs;
-            nb_oargs = def->nb_oargs;
-
-            // check if drag_through is in outputs
-            for (i = 0; i < nb_oargs; i++) {
-                arg = args[i];
-                TCGTemp *ts = &s->temps[arg];
-                if (ts != drag_through.ts) {
-                    continue;
-                }
-                // we got here, then this call uses drag_through as an output arg
-                if (IS_DEAD_ARG(i)) {
-                    // liveness claims this var is dead
-                    // if (state == LEADING_UP_TO_BB_END) {
-                        // add hint to keep it in register
-                        op_reg_alloc->life &= ~(DEAD_ARG << i);
-                    // }
-                }
-            }
-
-            // check if drag_through is present in input args
-            for (i = nb_oargs; i < nb_oargs + nb_iargs; i++) {
-                arg = args[i];
-                TCGTemp *ts = &s->temps[arg];
-                if (ts != drag_through.ts) {
-                    continue;
-                }
-                // we got here, then this call uses drag_through as an input arg
-                if (IS_DEAD_ARG(i)) {
-                    // and liveness thinks that after this call, our drag_through
-                    // should be dead
-                    // if (state == LEADING_UP_TO_BB_END) {
-                        // if this is followed by bb_end or its just a mv, then we dont
-                        // agree with liveness. drag_through should be synced but should
-                        // not be dead
-                        op_reg_alloc->life &= ~(DEAD_ARG << i);
-                    // }
-                    // else if this is last instruction in TB or its leading up to a call,
-                    // then agree with liveness. To agree with liveness, we simply do nothing.
-                }
-            }
-
-            /* if end of basic block, update */
-            if (def->flags & TCG_OPF_BB_END) {
-                state = LEADING_UP_TO_BB_END;
-            } else {
-                state = LEADING_UP_TO_MV_INTO;
-            }
             break;
         }
-    }
-
-    if (state) {
-        state = LEADING_UP_TO_CALL;
     }
 }
 
@@ -3074,6 +3031,7 @@ static void aa_global_reg_alloc_pass(TCGContext *s)
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
     int i, oi, oi_next, num_insns;
+    bool has_global_reg_alloc_init = false;
 
 #ifdef CONFIG_PROFILER
     {
@@ -3145,11 +3103,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         // array with meta information about each TCGOp the meta
         // hints register allocator when to emit load/store
         // instruction and when to free/keep register
-        AAOp *op_args_alloc_hint = tcg_malloc(sizeof(AAOp) * OPC_BUF_SIZE);
-        memset(&op_args_alloc_hint[0], 0, sizeof(AAOp) * OPC_BUF_SIZE);
+        GAOp *op_args_alloc_hint = tcg_malloc(sizeof(GAOp) * OPC_BUF_SIZE);
+        memset(&op_args_alloc_hint[0], 0, sizeof(GAOp) * OPC_BUF_SIZE);
         s->global_reg_alloc_hints = op_args_alloc_hint;
 
-        aa_global_reg_alloc_pass(s);
+        ga_global_reg_alloc_pass(s);
     }
 
 #ifdef CONFIG_PROFILER
@@ -3205,6 +3163,17 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             tcg_reg_alloc_movi(s, args, arg_life, alloc_life);
             break;
         case INDEX_op_insn_start:
+            if (!has_global_reg_alloc_init) {
+                 has_global_reg_alloc_init = true;
+                // do it here, so we dont mess up TCG function prolog
+                // load the special variables
+                TCGTemp *ts = s->drag_through.ts;
+                /* load the drag_through variable into register */
+                temp_load(s, ts, tcg_target_available_regs[ts->type], s->reserved_regs);
+                /* mark the reg as fixed after this variable (this stops mov propagation) */
+                ts->fixed_reg = 1;
+                tcg_regset_set_reg(s->reserved_regs, ts->reg);
+            }
             if (num_insns >= 0) {
                 s->gen_insn_end_off[num_insns] = tcg_current_code_size(s);
             }
@@ -3230,10 +3199,27 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             tcg_reg_alloc_call(s, op->callo, op->calli, args, arg_life, alloc_life);
             break;
         case INDEX_op_exit_tb:
-        case INDEX_op_goto_tb:
-            /* sync and mark dead the temp that we were dragging through */
-            // temp_sync(s, s->drag_through.ts, s->reserved_regs, 1);
-            /* fallthrough */
+            {
+                /* sync and mark dead the temp that we were dragging through */
+                TCGTemp *ts = s->drag_through.ts;
+                /* emit code to sync with memory
+                trick qemu to force sync */
+                ts->mem_coherent = 0;
+                ts->fixed_reg = 0;
+                temp_sync(s, ts, s->reserved_regs, 0);
+                ts->fixed_reg = 1;
+                /* count exits */
+                s->exits_count--;
+                if (ts->reg && s->reg_to_temp[ts->reg] == ts && s->exits_count == 0) {
+                    /* after the last goto_tb/exit_tb is done, mark the var as free */
+                    /* remove the claim on register */
+                    tcg_regset_reset_reg(s->reserved_regs, ts->reg);
+                    ts->fixed_reg = 0;
+                    /* free the reg used for this variable (else x86 backend does not do temp_load) */
+                    temp_free_or_dead(s, ts, -1);
+                }
+            }
+            /* fallthrough so the exit_tb and goto_tb get proper treatement */
         default:
             /* Sanity check that we've not introduced any unhandled opcodes. */
             tcg_debug_assert(tcg_op_supported(opc));
