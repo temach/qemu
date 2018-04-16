@@ -103,12 +103,12 @@ OP after optimization and liveness analysis:
 0x55eb20e16680:  mov    -0x14(%r14),%ebp
 0x55eb20e16684:  test   %ebp,%ebp
 0x55eb20e16686:  jl     0x55eb20e16778
-0x55eb20e1668c:  movl   $0x4,0xc(%r14)
-0x55eb20e16694:  mov    0x204(%r14),%ebp
-0x55eb20e1669b:  mov    0x208(%r14),%ebx
-0x55eb20e166a2:  xor    %ebx,%ebp
-0x55eb20e166a4:  test   %ebp,%ebp
-0x55eb20e166a6:  jge    0x55eb20e166ba
+0x55eb20e1668c:  movl   $0x4,0xc(%r14)          ; load value 4 at start of loop
+0x55eb20e16694:  mov    0x204(%r14),%ebp        ; load the flags at address 0x20. into registers
+0x55eb20e1669b:  mov    0x208(%r14),%ebx        ; load flags VF and NF
+0x55eb20e166a2:  xor    %ebx,%ebp               ; xor the flags (?)
+0x55eb20e166a4:  test   %ebp,%ebp               ; sets comparison flags (ZF, etc.)
+0x55eb20e166a6:  jge    0x55eb20e166ba          ; jumps based on flags,
 0x558457d2c6ac:  mov    0x4(%r14),%ebp
 0x558457d2c6b0:  mov    0x8(%r14),%ebx
 0x558457d2c6b4:  add    %ebx,%ebp
@@ -237,59 +237,59 @@ OP after optimization and liveness analysis:
 >>>>>>>>>>>>>>>>>>
 
 &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&OUT: [size=252]
-0x558457d2c840:  mov    -0x14(%r14),%ebp
-0x558457d2c844:  test   %ebp,%ebp
+0x558457d2c840:  mov    -0x14(%r14),%ebp    ; move magic value from stack into ebp
+0x558457d2c844:  test   %ebp,%ebp           ; check if we must quit guest code and do qemu stuff
 0x558457d2c846:  jl     0x558457d2c930
-0x558457d2c84c:  mov    0x204(%r14),%ebp
-0x558457d2c853:  mov    0x208(%r14),%ebx
-0x558457d2c85a:  xor    %ebx,%ebp
-0x558457d2c85c:  test   %ebp,%ebp
-0x558457d2c85e:  jge    0x558457d2c872
-0x558457d2c864:  mov    0x4(%r14),%ebp
-0x558457d2c868:  mov    0x8(%r14),%ebx
-0x558457d2c86c:  add    %ebx,%ebp
-0x558457d2c86e:  mov    %ebp,0x4(%r14)
-0x558457d2c872:  mov    0x8(%r14),%ebp
-0x558457d2c876:  mov    0x4(%r14),%ebx
+0x558457d2c84c:  mov    0x204(%r14),%ebp    ; load VF flag into ebp
+0x558457d2c853:  mov    0x208(%r14),%ebx    ; load NF flag into ebx
+0x558457d2c85a:  xor    %ebx,%ebp           ; xor the flags
+0x558457d2c85c:  test   %ebp,%ebp           ; set flags
+0x558457d2c85e:  jge    0x558457d2c872      ; jumps based on flags (conditional add)
+0x558457d2c864:  mov    0x4(%r14),%ebp      ; jump not taken, do an add, load arm-r1 into ebp
+0x558457d2c868:  mov    0x8(%r14),%ebx      ; load arm-r2 into ebx
+0x558457d2c86c:  add    %ebx,%ebp           ; add (conditional)
+0x558457d2c86e:  mov    %ebp,0x4(%r14)      ; write the result into memory arm-r1 variable
+0x558457d2c872:  mov    0x8(%r14),%ebp      ; this is jump target, load arm-r2 into ebp
+0x558457d2c876:  mov    0x4(%r14),%ebx      ; load arm-r1 into ebx
 0x558457d2c87a:  sub    %ebx,%ebp
-0x558457d2c87c:  mov    %ebp,0x8(%r14)
-0x558457d2c880:  mov    0x204(%r14),%ebp
-0x558457d2c887:  mov    0x208(%r14),%ebx
-0x558457d2c88e:  xor    %ebx,%ebp
-0x558457d2c890:  sar    $0x1f,%ebp
-0x558457d2c893:  mov    0x20c(%r14),%ebx
-0x558457d2c89a:  andn   %ebx,%ebp,%ebp
-0x558457d2c89f:  test   %ebp,%ebp
-0x558457d2c8a1:  je     0x558457d2c8b5
-0x558457d2c8a7:  mov    0x4(%r14),%ebp
-0x558457d2c8ab:  mov    0x8(%r14),%ebx
-0x558457d2c8af:  sub    %ebx,%ebp
-0x558457d2c8b1:  mov    %ebp,0x4(%r14)
-0x558457d2c8b5:  mov    0x8(%r14),%ebp
-0x558457d2c8b9:  mov    0x4(%r14),%ebx
+0x558457d2c87c:  mov    %ebp,0x8(%r14)      ; write ebp to memory arm-r2 variable
+0x558457d2c880:  mov    0x204(%r14),%ebp    ; move VF flag into ebp
+0x558457d2c887:  mov    0x208(%r14),%ebx    ; move NF flag into ebx
+0x558457d2c88e:  xor    %ebx,%ebp           ; xor the flags
+0x558457d2c890:  sar    $0x1f,%ebp          ; shift right by 31 bits, leave only 1 bit
+0x558457d2c893:  mov    0x20c(%r14),%ebx    ; move ZF flag into ebx
+0x558457d2c89a:  andn   %ebx,%ebp,%ebp      ; "and not" then store result in ebx
+0x558457d2c89f:  test   %ebp,%ebp           ; sets flags
+0x558457d2c8a1:  je     0x558457d2c8b5      ; jumps if zero flag is set (conditional sub)
+0x558457d2c8a7:  mov    0x4(%r14),%ebp      ; if jump is not taken, load arm-r1 into ebp
+0x558457d2c8ab:  mov    0x8(%r14),%ebx      ; load arm-r2 into ebx
+0x558457d2c8af:  sub    %ebx,%ebp           ; subtract  (conditional)
+0x558457d2c8b1:  mov    %ebp,0x4(%r14)      ; move result into memory arm-r1 variable
+0x558457d2c8b5:  mov    0x8(%r14),%ebp      ; jump target, load arm-r2 into ebp
+0x558457d2c8b9:  mov    0x4(%r14),%ebx      ; load arm-r1 into ebx
 0x558457d2c8bd:  add    %ebx,%ebp
-0x558457d2c8bf:  mov    %ebp,0x8(%r14)
-0x558457d2c8c3:  mov    0xc(%r14),%ebp
-0x558457d2c8c7:  dec    %ebp
-0x558457d2c8c9:  mov    %ebp,0xc(%r14)
-0x558457d2c8cd:  mov    %ebp,0x208(%r14)
-0x558457d2c8d4:  mov    %ebp,0x20c(%r14)
-0x558457d2c8db:  movl   $0x1,0x200(%r14)
-0x558457d2c8e6:  movl   $0x0,0x204(%r14)
-0x558457d2c8f1:  test   %ebp,%ebp
-0x558457d2c8f3:  je     0x558457d2c914
-0x558457d2c8f9:  xchg   %ax,%ax
+0x558457d2c8bf:  mov    %ebp,0x8(%r14)      ; save result to memory arm-r2 variable
+0x558457d2c8c3:  mov    0xc(%r14),%ebp      ; load arm-r3 variable into ebp
+0x558457d2c8c7:  dec    %ebp                ; decrement ebp
+0x558457d2c8c9:  mov    %ebp,0xc(%r14)      ; save ebp to memory arm-r3 variable
+0x558457d2c8cd:  mov    %ebp,0x208(%r14)    ; move ebp into NF flag
+0x558457d2c8d4:  mov    %ebp,0x20c(%r14)    ; move ebp into ZF flag
+0x558457d2c8db:  movl   $0x1,0x200(%r14)    ; move 1 into CF (0x200) flag
+0x558457d2c8e6:  movl   $0x0,0x204(%r14)    ; move 0 into VF (0x204) flag
+0x558457d2c8f1:  test   %ebp,%ebp           ; set flags depending on ebp state
+0x558457d2c8f3:  je     0x558457d2c914      ; jump if ZERO flag is set
+0x558457d2c8f9:  xchg   %ax,%ax             ;
 0x558457d2c8fb:  jmpq   0x558457d2c900
 0x558457d2c900:  movl   $0x100bc,0x3c(%r14)
 0x558457d2c908:  lea    -0x14f(%rip),%rax        # 0x558457d2c7c0
-0x558457d2c90f:  jmpq   0x558457d2c5d8
-0x558457d2c914:  xchg   %ax,%ax
+0x558457d2c90f:  jmpq   0x558457d2c5d8      ; quit TB
+0x558457d2c914:  xchg   %ax,%ax             ; jump if ZERO flag target
 0x558457d2c917:  jmpq   0x558457d2c91c
 0x558457d2c91c:  movl   $0x100d8,0x3c(%r14)
 0x558457d2c924:  lea    -0x16a(%rip),%rax        # 0x558457d2c7c1
-0x558457d2c92b:  jmpq   0x558457d2c5d8
+0x558457d2c92b:  jmpq   0x558457d2c5d8      ; quit TB
 0x558457d2c930:  lea    -0x174(%rip),%rax        # 0x558457d2c7c3
-0x558457d2c937:  jmpq   0x558457d2c5d8
+0x558457d2c937:  jmpq   0x558457d2c5d8      ; quit TB
 
 R00=00000000 R01=fffde7ac R02=fffef3d6 R03=00000003
 R04=00000000 R05=00000000 R06=00000000 R07=00000000
