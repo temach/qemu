@@ -576,6 +576,7 @@ typedef struct TCGTemp {
     TCGTempVal val_type:8;
     TCGType base_type:8;
     TCGType type:8;
+    /* fixed_reg = true if the temporary always lives in the same register */
     unsigned int fixed_reg:1;
     unsigned int indirect_reg:1;
     unsigned int indirect_base:1;
@@ -606,6 +607,10 @@ typedef struct TCGTempSet {
 #define SYNC_ARG  1
 typedef uint16_t TCGLifeData;
 
+// number of registers to give away to global alloc algorithm
+// #define REGS_FOR_GLOBAL_ALLOC (1)
+#define REGS_FOR_GLOBAL_ALLOC (TCG_TARGET_NB_REGS / 2)
+
 /* The layout here is designed to avoid crossing of a 32-bit boundary.
    If we do so, gcc adds padding, expanding the size to 12.  */
 typedef struct TCGOp {
@@ -624,6 +629,11 @@ typedef struct TCGOp {
 
     /* Lifetime data of the operands.  */
     unsigned life   : 16;       /* 64 */
+
+    bool ga_pre_load_regs;
+    bool ga_post_load_regs;
+    bool ga_sync_regs;
+    bool ga_free_regs;
 } TCGOp;
 
 /* Make sure operands fit in the bitfields above.  */
@@ -632,7 +642,16 @@ QEMU_BUILD_BUG_ON(OPC_BUF_SIZE > (1 << 10));
 QEMU_BUILD_BUG_ON(OPPARAM_BUF_SIZE > (1 << 14));
 
 /* Make sure that we don't overflow 64 bits without noticing.  */
-QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
+// QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
+
+
+// ARTEM
+// Struct to hold meta information about a temporary (its name and count of its usage)
+typedef struct GAVar {
+    char name[32];
+    int count;
+    TCGTemp *ts;
+} GAVar;
 
 struct TCGContext {
     uint8_t *pool_cur, *pool_end;
@@ -655,6 +674,11 @@ struct TCGContext {
     TCGTemp *frame_temp;
 
     tcg_insn_unit *code_ptr;
+
+    // choose a temporary (local temp or global) to be placed on the register and kept there
+    GAVar drag_through[REGS_FOR_GLOBAL_ALLOC];
+    int drag_through_len;
+    int exits_count;
 
 #ifdef CONFIG_PROFILER
     /* profiling info */
@@ -876,9 +900,15 @@ enum {
 
 typedef struct TCGOpDef {
     const char *name;
+    /* nb_args is the total number of arguments: oargs + iargs + cargs */
+    /* cargs is number of Constant args (arguments that are constants) */
+    /* the type of arg: i, o, c tells us where to look up the arg value? */
     uint8_t nb_oargs, nb_iargs, nb_cargs, nb_args;
     uint8_t flags;
+    /* Constraint what arg can go on which register and how they relate */
     TCGArgConstraint *args_ct;
+    /* this is some array. Probably arguments are put there in sorted
+     * order (by usage), i.e. one oarg first, followed by a couple of iargs */
     int *sorted_args;
 #if defined(CONFIG_DEBUG_TCG)
     int used;
