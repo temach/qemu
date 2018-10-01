@@ -26,6 +26,7 @@
 #define USE_TCG_OPTIMIZATIONS
 
 #include "qemu/osdep.h"
+#include <stdbool.h>
 
 /* Define to jump the ELF file used to communicate with GDB.  */
 #undef DEBUG_JIT
@@ -1425,6 +1426,102 @@ void tcg_dump_ops(TCGContext *s)
                 }
             }
         }
+        {
+            int i, k;
+            TCGTemp *t;
+            // iterate over the input/output arguments
+            int nb_oargs = def->nb_oargs;
+            int nb_iargs = def->nb_iargs;
+            int print_once = 1;
+
+            // for each temp we try to find its first use as output arg, this op becomes live_range_start for temp
+            k = 0;
+            for (i = 0; i < nb_oargs; i++, k++) {
+                t = &s->temps[args[k]];
+                if (t->fixed_reg) {
+                    /* do not consider globals that are already fixed_reg */
+                    continue;
+                }
+                int temp_survives_basic_blocks = temp_idx(s, t) < (s->nb_globals);
+                if (! temp_survives_basic_blocks) {
+                    /* do not consider temps that dont survive basic blocks, just always load and store them */
+                    continue;
+                }
+                if (t->live_range_start == op) {
+                    if (print_once) {
+                        qemu_log("      lstart:");
+                        print_once = 0;
+                    }
+                    qemu_log(" %s", t->name);
+                }
+            }
+
+            // for each temp we try to find its last use as input arg, this op becomes live_range_end for temp
+            for (i = 0; i < nb_iargs; i++, k++) {
+                t = &s->temps[args[k]];
+                if (t->fixed_reg) {
+                    /* dont consider globals that are already fixed_reg */
+                    continue;
+                }
+                int temp_survives_basic_blocks = temp_idx(s, t) < (s->nb_globals);
+                if (! temp_survives_basic_blocks) {
+                    /* do not consider temps that dont survive basic blocks, just always load and store them */
+                    continue;
+                }
+                if (t->live_range_start == op) {
+                    if (print_once) {
+                        qemu_log("      lstart:");
+                        print_once = 0;
+                    }
+                    qemu_log(" %s", t->name);
+                }
+            }
+
+            print_once = 1;
+
+            // for each temp we try to find its first use as output arg, this op becomes live_range_start for temp
+            k = 0;
+            for (i = 0; i < nb_oargs; i++, k++) {
+                t = &s->temps[args[k]];
+                if (t->fixed_reg) {
+                    /* do not consider globals that are already fixed_reg */
+                    continue;
+                }
+                int temp_survives_basic_blocks = temp_idx(s, t) < (s->nb_globals);
+                if (! temp_survives_basic_blocks) {
+                    /* do not consider temps that dont survive basic blocks, just always load and store them */
+                    continue;
+                }
+                if (t->live_range_end == op) {
+                    if (print_once) {
+                        qemu_log("      lend:");
+                        print_once = 0;
+                    }
+                    qemu_log(" %s", t->name);
+                }
+            }
+
+            // for each temp we try to find its last use as input arg, this op becomes live_range_end for temp
+            for (i = 0; i < nb_iargs; i++, k++) {
+                t = &s->temps[args[k]];
+                if (t->fixed_reg) {
+                    /* dont consider globals that are already fixed_reg */
+                    continue;
+                }
+                int temp_survives_basic_blocks = temp_idx(s, t) < (s->nb_globals);
+                if (! temp_survives_basic_blocks) {
+                    /* do not consider temps that dont survive basic blocks, just always load and store them */
+                    continue;
+                }
+                if (t->live_range_end == op) {
+                    if (print_once) {
+                        qemu_log("      lend:");
+                        print_once = 0;
+                    }
+                    qemu_log(" %s", t->name);
+                }
+            }
+        }
         qemu_log("\n");
 
         if (def->flags & TCG_OPF_BB_END) {
@@ -1657,6 +1754,303 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
         }
     }
 }
+
+
+static int ga_insert_by_increasing_end(TCGTemp **array, int array_len, TCGTemp *new_live_range) {
+    int i=0;
+    TCGTemp *temp = NULL;
+    for (i = 0; i < array_len; i++) {
+        if (temp != NULL) {
+            // this runs after inserting new live range
+            // now need to shift array down by one element
+
+            // also reuse the new_live_range variable, it has
+            // no use after its been added to array
+            new_live_range = array[i];
+            array[i] = temp;
+            temp = new_live_range;
+        } else if (new_live_range->live_range_end < array[i]->live_range_end) {
+            // save the range with longer end
+            temp = array[i];
+            // put new range in its place
+            array[i] = new_live_range;
+            new_live_range = NULL;
+        }
+    }
+
+    if (temp == NULL) {
+        // did not find a place to insert, append to end, just assume length is big enougth
+        array[array_len] = new_live_range;
+    } else {
+        // down shifting the array, append last element to end, just assume length is big enougth
+        array[array_len] = temp;
+    }
+
+    return array_len+1;
+}
+
+// after computing live ranges we want to get sorted array of live ranges
+// we create another variable in TCGContext called live_intervals which will be ordered.
+// since we dont always use all global vars in TB, we store length in live_intervals_len
+// The code is from https://stackoverflow.com/questions/35376769/sorting-one-array-into-another-c
+static void ga_make_sorted_live_ranges(TCGContext *s) {
+    // copy only pointers that have valid start of interval value
+    int i;
+    s->live_intervals_len = 0;
+    for (i=0; i < s->nb_globals; i++) {
+        // if the global temp is used in the translation block it will have
+        // live_range_start assigned, take only temps with valid live_range_start
+        if (s->temps[i].live_range_start != NULL) {
+            s->live_intervals[s->live_intervals_len++] = &s->temps[i];
+            tcg_debug_assert(s->temps[i].live_range_end != NULL);
+        }
+    }
+
+    // and sort them
+    TCGTemp **a = &s->live_intervals[0];
+    TCGTemp *t = NULL;
+    int swapped = 1;
+    int j = s->live_intervals_len;
+    swapped = 1;
+    while (swapped) {
+        swapped = 0;
+        for (i = 1; i < j; i++) {
+            if (a[i-1]->live_range_start > a[i]->live_range_start) {
+                // swap if left is 0 OR left is less than right
+                t = a[i];
+                a[i] = a[i - 1];
+                a[i - 1] = t;
+                swapped = 1;
+            }
+        }
+        j--;
+    }
+}
+
+// after computing live ranges
+static void ga_linear_scan(TCGContext *s) {
+//    // use half the regs for global alloc and leave temporaries for liveness
+//    int max_regs = (TCG_TARGET_NB_REGS / 2);
+//    // clear active list
+//    memset(s->active, NULL, (sizeof(TCGTemp *) * max_regs));
+//    s->active_len = 0;
+//    // start the algo
+//    int i = 0;
+//    for (i=0; i < s->live_intervals_len; i++) {
+//        ga_expire_old_intervals(s, i);
+//        if (active_len == max_regs) {
+//           spill_at_interval(s, i);
+//        } else {
+//            TCGTemp *ts = s->live_intervals[i];
+//            s->active_len = ga_insert_by_increasing_end(s->active, s->active_len, ts);
+//            //temp_load(s, ts, tcg_target_available_regs[ts->type], s->reserved_regs);
+//        }
+//    }
+//  s->live_intervals[0]->linear_scan = 1;  // tell liveness not to worry about this
+    // either we choose r3 at index 0 OR we choose pc at index 7
+
+    // ask qemu to find a free register
+    TCGReg reg_one = tcg_reg_alloc(s, tcg_target_available_regs[TCG_TYPE_REG], s->reserved_regs, 0);
+    // and reserve this register for linear scan register allocation, now it wont be used by QEMU
+    tcg_regset_set_reg(s->reserved_regs, reg_one);
+
+    // indicate that these vars are under linear scan algorithm for spills/loads
+    s->live_intervals[0]->linear_scan = 1;
+    s->live_intervals[3]->linear_scan = 1;
+
+    s->live_intervals[0]->reg = reg_one;
+    s->live_intervals[3]->reg = reg_one;
+
+
+
+    return;
+}
+
+static void ga_resolve_assumptions(TCGContext *s) {
+    return;
+    /*
+    int oi, oi_next;
+
+    // notice we start with opcode 0 and take his "prev" this
+    // way we get not the start opcode but the end opcode
+    // and we travel backwards
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = oi_next) {
+        int i, k, nb_oargs, nb_iargs;
+        TCGTemp *t;
+
+        // the instruction type and index of the arguments
+        TCGOp *op = &s->gen_op_buf[oi];
+        // instruction type explicitly
+        TCGOpcode opc = op->opc;
+        // describes the instruction and its arguments specification
+        const TCGOpDef *def = &tcg_op_defs[opc];
+        // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
+        const TCGArg *args = &s->gen_opparam_buf[op->args];
+        // get the liveness information for the outputs/inputs to this op
+        // TCGLifeData arg_life = op->life;
+
+        oi_next = op->next;
+
+        switch (opc) {
+        case INDEX_op_insn_start:
+            // in debug output this op is shown as "---- 000100123 012012" address
+            // we can ignore it as its not related to basic blocks and branching
+            break;
+        case INDEX_op_call:
+            // for simplicity we must regard call as a basic block so even though it
+            // does not have TCG_OPF_BB_END we must before the call sync and free regs
+            // and then resolve any broken assumptions
+            break;
+        case INDEX_op_set_label:
+            // this is slightly different because  it marks the start of a block
+            break;
+        case INDEX_op_br:
+        case INDEX_op_brcond_i32:
+        case INDEX_op_brcond2_i32:
+        case INDEX_op_brcond_i64:
+        case INDEX_op_exit_tb:
+        case INDEX_op_goto_tb:
+        case INDEX_op_goto_ptr:
+            // these operations have the TCG_OPF_BB_END flag set
+            // they mark basic block start and end, must use them
+            // to resolve allocator assumptions
+            //
+            // to better understand the goto_tb and exit_tb mechanisms
+            // grep for "goto" in http://gsoc.cat-v.org/people/nwf/paper-strategy-plus.pdf
+            break;
+        default:
+            // Sanity check that we've not introduced any unhandled opcodes.
+            tcg_debug_assert(tcg_op_supported(opc));
+            break;
+        }
+    }
+    */
+}
+
+// run this after liveness analysis
+// we use liveness results and our own analysis to determine when to
+// emit tcg_out_st (to write temp to mem) or tcg_out_ld (to load temp
+// from mem to reg). With this we want to avoid excessive store/loads.
+static void ga_compute_live_ranges(TCGContext *s)
+{
+    int oi, oi_prev;
+
+    // notice we start with opcode 0 and take his "prev" this
+    // way we get not the start opcode but the end opcode
+    // and we travel backwards
+    for (oi = s->gen_op_buf[0].prev; oi != 0; oi = oi_prev) {
+        int i, k, nb_oargs, nb_iargs;
+        TCGTemp *t;
+
+        // the instruction type and index of the arguments
+        TCGOp *op = &s->gen_op_buf[oi];
+        // instruction type explicitly
+        TCGOpcode opc = op->opc;
+        // describes the instruction and its arguments specification
+        const TCGOpDef *def = &tcg_op_defs[opc];
+        // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
+        const TCGArg *args = &s->gen_opparam_buf[op->args];
+        // get the liveness information for the outputs/inputs to this op
+        // TCGLifeData arg_life = op->life;
+
+        oi_prev = op->prev;
+
+        switch (opc) {
+        case INDEX_op_insn_start:
+            // in debug output this op is shown as "---- 000100123 012012" address
+            // we can ignore it as its not related to basic blocks and branching
+            break;
+        case INDEX_op_call:
+            // for simplicity we must regard call as a basic block so even though it
+            // does not have TCG_OPF_BB_END we must before the call sync and free regs
+            // and then resolve any broken assumptions
+            break;
+        case INDEX_op_set_label:
+            // this is slightly different because  it marks the start of a block
+            break;
+        case INDEX_op_br:
+        case INDEX_op_brcond_i32:
+        case INDEX_op_brcond2_i32:
+        case INDEX_op_brcond_i64:
+        case INDEX_op_exit_tb:
+        case INDEX_op_goto_tb:
+        case INDEX_op_goto_ptr:
+            // these operations have the TCG_OPF_BB_END flag set
+            // they mark basic block start and end, must use them
+            // to resolve allocator assumptions
+            //
+            // to better understand the goto_tb and exit_tb mechanisms
+            // grep for "goto" in http://gsoc.cat-v.org/people/nwf/paper-strategy-plus.pdf
+            break;
+        default:
+            /* Sanity check that we've not introduced any unhandled opcodes. */
+            tcg_debug_assert(tcg_op_supported(opc));
+
+            // iterate over the input/output arguments
+            nb_oargs = def->nb_oargs;
+            nb_iargs = def->nb_iargs;
+
+            // for each temp we try to find its first use as output arg, this op becomes live_range_start for temp
+            k = 0;
+            for (i = 0; i < nb_oargs; i++, k++) {
+                t = &s->temps[args[k]];
+                if (t->fixed_reg) {
+                    /* do not consider globals that are already fixed_reg */
+                    continue;
+                }
+                int temp_survives_basic_blocks = temp_idx(s, t) < (s->nb_globals);
+                if (! temp_survives_basic_blocks) {
+                    /* do not consider temps that dont survive basic blocks, just always load and store them */
+                    continue;
+                }
+                // it seems wrong to state that live_range starts when the arg appears as an output
+                // in fact when arg is used as output we mark it DEAD not live according to Dragon Compiler Book
+                //
+                // if start is not set or start is earlier than current, make current the start
+                // ok to compare op to t->live_range_start since they point to the same gen_op_buf array
+                if (t->live_range_start == NULL || op < t->live_range_start) {
+                     t->live_range_start = op;
+                }
+                if (t->live_range_end == NULL || op > t->live_range_end) {
+                     t->live_range_end = op;
+                }
+            }
+
+            // for each temp we try to find its last use as input arg, this op becomes live_range_end for temp
+            for (i = 0; i < nb_iargs; i++, k++) {
+                t = &s->temps[args[k]];
+                if (t->fixed_reg) {
+                    /* dont consider globals that are already fixed_reg */
+                    continue;
+                }
+                int temp_survives_basic_blocks = temp_idx(s, t) < (s->nb_globals);
+                if (! temp_survives_basic_blocks) {
+                    /* do not consider temps that dont survive basic blocks, just always load and store them */
+                    continue;
+                }
+                if (t->live_range_start == NULL || op < t->live_range_start) {
+                     t->live_range_start = op;
+                }
+                if (t->live_range_end == NULL || op > t->live_range_end) {
+                     t->live_range_end = op;
+                }
+//                if (IS_DEAD_ARG(k) && t->live_range_end == NULL) {
+//                    // we found death of temp and this is the first death we found, then current op is
+//                    // last use of temp as we are looking at instructions from back to front
+//                    t->live_range_end = op;
+//                }
+//                // if start is not set or start is earlier than current, make current the start
+//                // ok to compare op to t->live_range_start since they point to the same gen_op_buf array
+//                if (t->live_range_start == NULL || op < t->live_range_start) {
+//                    t->live_range_start = op;
+//                }
+            }
+            break;
+        }
+    }
+
+}
+
 
 /* Liveness analysis : update the opc_arg_life array to tell if a
    given input arguments is dead. Instructions updating dead
@@ -2857,6 +3251,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
                 liveness_pass_1(s, temp_state);
             }
         }
+
+        ga_compute_live_ranges(s);
+        ga_make_sorted_live_ranges(s);
+        ga_linear_scan(s);
+        ga_resolve_assumptions(s);
     }
 
 #ifdef CONFIG_PROFILER
@@ -2867,7 +3266,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
                  && qemu_log_in_addr_range(tb->pc))) {
         qemu_log_lock();
-        qemu_log("OP after optimization and liveness analysis:\n");
+        qemu_log("OP after optimization, liveness analysis and linear scan:\n");
         tcg_dump_ops(s);
         qemu_log("\n");
         qemu_log_unlock();

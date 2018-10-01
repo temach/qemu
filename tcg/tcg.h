@@ -273,6 +273,10 @@ typedef enum TCGType {
 #endif
 } TCGType;
 
+// Forward declaration and typedef
+struct TCGOp;
+typedef struct TCGOp TCGOp;
+
 /* Constants for qemu_ld and qemu_st for the Memory Operation field.  */
 typedef enum TCGMemOp {
     MO_8     = 0,
@@ -572,12 +576,16 @@ typedef enum TCGTempVal {
 } TCGTempVal;
 
 typedef struct TCGTemp {
+    // if temp is under linear scan then the same reg is used throughout its life
+    // else its up to liveness info and tcg_reg_alloc
     TCGReg reg:8;
     TCGTempVal val_type:8;
     TCGType base_type:8;
     TCGType type:8;
     /* fixed_reg = true if the temporary always lives in the same register */
     unsigned int fixed_reg:1;
+    /* true if the temp is put and taken off the register by linear scan algorithm and should be ignored by liveness analysis */
+    unsigned int linear_scan:1;
     unsigned int indirect_reg:1;
     unsigned int indirect_base:1;
     unsigned int mem_coherent:1;
@@ -587,6 +595,16 @@ typedef struct TCGTemp {
                                   preserved across basic blocks. */
     unsigned int temp_allocated:1; /* never used for code gen */
 
+    /* pointer to first op to use this variable as output
+     * live range starts after first write to this var */
+    TCGOp *live_range_start;
+    /* pointer to last op to use this variable as input
+     * live range ends with last read from this var,
+     * after last read the var is DEAD */
+    TCGOp *live_range_end;
+
+    TCGReg reg;
+
     tcg_target_long val;
     struct TCGTemp *mem_base;
     intptr_t mem_offset;
@@ -594,6 +612,10 @@ typedef struct TCGTemp {
 } TCGTemp;
 
 typedef struct TCGContext TCGContext;
+
+// number of registers to give away to global alloc algorithm
+#define REGS_FOR_GLOBAL_ALLOC (3)
+// #define REGS_FOR_GLOBAL_ALLOC (TCG_TARGET_NB_REGS / 2)
 
 typedef struct TCGTempSet {
     unsigned long l[BITS_TO_LONGS(TCG_MAX_TEMPS)];
@@ -625,6 +647,8 @@ typedef struct TCGOp {
 
     /* Lifetime data of the operands.  */
     unsigned life   : 16;       /* 64 */
+
+    unsigned linear_scan_life : 16;
 } TCGOp;
 
 /* Make sure operands fit in the bitfields above.  */
@@ -634,6 +658,12 @@ QEMU_BUILD_BUG_ON(OPPARAM_BUF_SIZE > (1 << 14));
 
 /* Make sure that we don't overflow 64 bits without noticing.  */
 QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
+
+struct TCGTempLiveRange {
+    TCGTemp* temp;
+    TCGOp* start;
+    TCGOp* end;
+};
 
 struct TCGContext {
     uint8_t *pool_cur, *pool_end;
@@ -715,6 +745,13 @@ struct TCGContext {
 
     TCGTempSet free_temps[TCG_TYPE_COUNT * 2];
     TCGTemp temps[TCG_MAX_TEMPS]; /* globals first, temps after */
+
+    // pointers to temps, each temp contains info on its live range start/end.
+    // pointers are sorted in order of increasing t->live_range_start value
+    TCGTemp *live_intervals[TCG_MAX_TEMPS];
+    int live_intervals_len;
+    TCGTemp *active[TCG_TARGET_NB_REGS / 2];
+    int active_len;
 
     /* Tells which temporary holds a given register.
        It does not take into account fixed registers */
@@ -891,6 +928,14 @@ typedef struct TCGOpDef {
     int used;
 #endif
 } TCGOpDef;
+
+typedef struct TCGBasicBlockTransition {
+    // temp has:
+    // TEMP_VAL_REG in parent and TEMP_VAL_MEM in child
+    TCGTemp *need_store;
+    // TEMP_VAL_MEM in parent and TEMP_VAL_REG in child
+    TCGTemp *need_load;
+} TCGBasicBlock;
 
 extern TCGOpDef tcg_op_defs[];
 extern const size_t tcg_op_defs_max;
