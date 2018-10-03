@@ -603,7 +603,16 @@ typedef struct TCGTemp {
      * after last read the var is DEAD */
     TCGOp *live_range_end;
 
-    TCGReg reg;
+    /* used during global register allocation algorithm
+     * to maintain state, if the temp is on the reg or its
+     * being spilled and we should:
+     *      0) store current reg content
+     *      1) load new temp before op,
+     *      2) store new temp after op,
+     *      3) load the original reg content
+     * for every op involing this temp
+     * in linear scan only one overtake of reg is allowed for each temp */
+    // bool ga_can_overtake_reg;
 
     tcg_target_long val;
     struct TCGTemp *mem_base;
@@ -648,7 +657,14 @@ typedef struct TCGOp {
     /* Lifetime data of the operands.  */
     unsigned life   : 16;       /* 64 */
 
-    unsigned linear_scan_life : 16;
+    /* all ops that might lead to this op */
+    TCGOp *parents;
+    int parents_len;
+    /* all ops where we might get from here */
+    TCGOp *children;
+    int children_len;
+    /* what temp values are expected to be in the regs officially, according to global reg alloc */
+    TCGTemp *ga_temps_in_reg[TCG_TARGET_NB_REGS];
 } TCGOp;
 
 /* Make sure operands fit in the bitfields above.  */
@@ -752,6 +768,13 @@ struct TCGContext {
     int live_intervals_len;
     TCGTemp *active[TCG_TARGET_NB_REGS / 2];
     int active_len;
+
+    /* tells which temp the reg is suposed to hold now according
+     * to global register allocation algorithm */
+    TCGTemp *ga_reg_to_temp[TCG_TARGET_NB_REGS];
+
+    TCGBasicBlock cfg[50];
+    int cfg_len;
 
     /* Tells which temporary holds a given register.
        It does not take into account fixed registers */
@@ -929,12 +952,18 @@ typedef struct TCGOpDef {
 #endif
 } TCGOpDef;
 
-typedef struct TCGBasicBlockTransition {
+typedef struct TCGBasicBlock {
+    TCGOp *start_op;
+    TCGOp *end_op;
+
     // temp has:
     // TEMP_VAL_REG in parent and TEMP_VAL_MEM in child
-    TCGTemp *need_store;
+    TCGTemp *in_reg[TCG_TARGET_NB_REGS];
     // TEMP_VAL_MEM in parent and TEMP_VAL_REG in child
-    TCGTemp *need_load;
+    TCGTemp *in_mem[20];
+
+    TCGBasicBlock *parents[10];
+    TCGBasicBlock *children[2];
 } TCGBasicBlock;
 
 extern TCGOpDef tcg_op_defs[];

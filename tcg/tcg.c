@@ -1730,6 +1730,8 @@ TCGOp *tcg_op_insert_after(TCGContext *s, TCGOp *old_op,
 #define IS_DEAD_ARG(n)   (arg_life & (DEAD_ARG << (n)))
 #define NEED_SYNC_ARG(n) (arg_life & (SYNC_ARG << (n)))
 
+#define OVERTAKES_REG(n)    (arg_overtake_reg & ())
+
 /* liveness analysis: end of function: all temps are dead, and globals
    should be in memory. */
 static inline void tcg_la_func_end(TCGContext *s, uint8_t *temp_state)
@@ -1861,9 +1863,122 @@ static void ga_linear_scan(TCGContext *s) {
     s->live_intervals[0]->reg = reg_one;
     s->live_intervals[3]->reg = reg_one;
 
-
-
+    // s->live_intervals[0]->ga_can_overtake_reg = 1;
+    // s->live_intervals[3]->ga_can_overtake_reg = 1;
     return;
+}
+
+static TCGOp* ga_find_label(int label_id) {
+    unsigned int oi, oi_next;
+
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = oi_next) {
+        int i, k, nb_oargs, nb_iargs;
+        TCGTemp *t;
+
+        // the instruction type and index of the arguments
+        TCGOp *op = &s->gen_op_buf[oi];
+        // instruction type explicitly
+        TCGOpcode opc = op->opc;
+        // describes the instruction and its arguments specification
+        const TCGOpDef *def = &tcg_op_defs[opc];
+        // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
+        const TCGArg *args = &s->gen_opparam_buf[op->args];
+        // get the liveness information for the outputs/inputs to this op
+        // TCGLifeData arg_life = op->life;
+
+        oi_next = op->next;
+
+        if (opc === INDEX_op_set_label && arg_label(args[0])->id == label_id) {
+            return op;
+        } else {
+            continue;
+        }
+    }
+    // we should never reach here
+    tcg_debug_assert(false);
+    return NULL;
+}
+
+static void ga_build_cfg(TCGContext *s) {
+    int oi, oi_next;
+
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = oi_next) {
+        int i, k, nb_oargs, nb_iargs;
+        TCGTemp *t;
+
+        // the instruction type and index of the arguments
+        TCGOp *op = &s->gen_op_buf[oi];
+        // instruction type explicitly
+        TCGOpcode opc = op->opc;
+        // describes the instruction and its arguments specification
+        const TCGOpDef *def = &tcg_op_defs[opc];
+        // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
+        const TCGArg *args = &s->gen_opparam_buf[op->args];
+        // get the liveness information for the outputs/inputs to this op
+        // TCGLifeData arg_life = op->life;
+
+        oi_next = op->next;
+
+        if (! def->flags & TCG_OPF_BB_END) {
+            // the op is nothing interesting
+            op->ga_temps_in_reg = NULL;
+            op->parents = NULL;
+            op->parents_len = 0;
+            op->children = NULL;
+            op->children_len = 0;
+            continue;
+        }
+
+        switch (opc) {
+        case INDEX_op_call:
+            // for simplicity we must regard call as a basic block so even though it
+            // does not have TCG_OPF_BB_END we must before the call sync and free regs
+            // and then resolve any broken assumptions
+            break;
+        case INDEX_op_set_label:
+            // block ends at jump instruction or before label instruction
+            cur_bb->end_op = op;
+            cur_bb++;
+
+            // this is slightly different because  it marks the start of a block
+            cur_bb->start_op = op;
+            cur_bb->j
+            break;
+        case INDEX_op_br:
+        case INDEX_op_brcond_i32:
+        case INDEX_op_brcond2_i32:
+        case INDEX_op_brcond_i64:
+            op->children[op->children_len++] = op->next;
+            // brcond has the target lable as argument index 3
+            op->children[op->children_len++] = ga_find_set_label_op_by_id(s, arg_label(args[3])->id);
+
+
+
+
+            break;
+        case INDEX_op_exit_tb:
+        case INDEX_op_goto_tb:
+        case INDEX_op_goto_ptr:
+            // these operations have the TCG_OPF_BB_END flag set
+            // they mark basic block start and end, must use them
+            // to resolve allocator assumptions
+            //
+            // to better understand the goto_tb and exit_tb mechanisms
+            // grep for "goto" in http://gsoc.cat-v.org/people/nwf/paper-strategy-plus.pdf
+
+            // block ends at jump instruction or before label instruction
+            cur_bb->end_op = op;
+            cur_bb++;
+
+
+            break;
+        default:
+            // Sanity check that we've not introduced any unhandled opcodes.
+            tcg_debug_assert(tcg_op_supported(opc));
+            break;
+        }
+    }
+
 }
 
 static void ga_resolve_assumptions(TCGContext *s) {
