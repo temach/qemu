@@ -1771,81 +1771,132 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
     }
 }
 
+// keep sorted by increasing end point
+static int ga_add_to_active(TCGContext *s, TCGTemp *live_range) {
+    // add new value to end
+    s->active[s->active_len++] = live_range;
 
-/*
-static int ga_insert_by_increasing_end(TCGTemp **array, int array_len, TCGTemp *new_live_range) {
-    int i=0;
-    TCGTemp *temp = NULL;
-    for (i = 0; i < array_len; i++) {
-        if (temp != NULL) {
-            // this runs after inserting new live range
-            // now need to shift array down by one element
+    // and bubble sort them
+    TCGTemp **a = s->active;
+    TCGTemp *t = NULL;
+    int swapped = 1;
+    int j = s->active_len;
+    swapped = 1;
+    while (swapped) {
+        swapped = 0;
+        for (i = 1; i < j; i++) {
+            if (a[i-1]->live_range_end > a[i]->live_range_end) {
+                t = a[i];
+                a[i] = a[i - 1];
+                a[i - 1] = t;
+                swapped = 1;
+            }
+        }
+        j--;
+    }
+}
 
-            // also reuse the new_live_range variable, it has
-            // no use after its been added to array
-            new_live_range = array[i];
-            array[i] = temp;
-            temp = new_live_range;
-        } else if (new_live_range->live_range_end < array[i]->live_range_end) {
-            // save the range with longer end
-            temp = array[i];
-            // put new range in its place
-            array[i] = new_live_range;
-            new_live_range = NULL;
+// keep sorted by increasing end point
+static int ga_remove_from_active(TCGContext *s, TCGTemp *live_range) {
+    // add new value to end
+    int i = 0;
+    int del_index = 0;
+    for (i=0; i < s->active_len; i++) {
+        if (s->active[i] == live_range) {
+            del_index = i;
+            break;
         }
     }
+    // decrement len
+    // overwrite element you want to delete with one from back
+    s->active_len--;
+    s->active[del_index] = s->active[s->active_len];
 
-    if (temp == NULL) {
-        // did not find a place to insert, append to end, just assume length is big enougth
-        array[array_len] = new_live_range;
-    } else {
-        // down shifting the array, append last element to end, just assume length is big enougth
-        array[array_len] = temp;
+    // and bubble sort them
+    TCGTemp **a = s->active;
+    TCGTemp *t = NULL;
+    int swapped = 1;
+    int j = s->active_len;
+    swapped = 1;
+    while (swapped) {
+        swapped = 0;
+        for (i = 1; i < j; i++) {
+            if (a[i-1]->live_range_end > a[i]->live_range_end) {
+                t = a[i];
+                a[i] = a[i - 1];
+                a[i - 1] = t;
+                swapped = 1;
+            }
+        }
+        j--;
     }
-
-    return array_len+1;
 }
-*/
 
+static void ga_expire_old_intervals(TCGContext *s, int interval) {
+    int j;
+    // live_intervals is in order of increasing start point
+    // active is in order of increasing end point
+    for (j=0; j < s->active_len; j++) {
+        if (s->active[j]->live_range_end >= s->live_intervals[interval]) {
+            return;
+        }
+        ga_remove_from_active(s->active[j]);
+    }
+}
 
 // after computing live ranges
 static void ga_linear_scan(TCGContext *s) {
-//    // use half the regs for global alloc and leave temporaries for liveness
-//    int max_regs = (TCG_TARGET_NB_REGS / 2);
-//    // clear active list
-//    memset(s->active, NULL, (sizeof(TCGTemp *) * max_regs));
-//    s->active_len = 0;
-//    // start the algo
-//    int i = 0;
-//    for (i=0; i < s->live_intervals_len; i++) {
-//        ga_expire_old_intervals(s, i);
-//        if (active_len == max_regs) {
-//           spill_at_interval(s, i);
-//        } else {
-//            TCGTemp *ts = s->live_intervals[i];
-//            s->active_len = ga_insert_by_increasing_end(s->active, s->active_len, ts);
-//            //temp_load(s, ts, tcg_target_available_regs[ts->type], s->reserved_regs);
-//        }
-//    }
-//  s->live_intervals[0]->linear_scan = 1;  // tell liveness not to worry about this
-    // either we choose r3 at index 0 OR we choose pc at index 7
+    // use half the regs for global alloc and leave temporaries for liveness
+    int max_regs = (TCG_TARGET_NB_REGS / 2);
 
-    /*
-    // ask qemu to find a free register
-    TCGReg reg_one = tcg_reg_alloc(s, tcg_target_available_regs[TCG_TYPE_REG], s->reserved_regs, 0);
-    // and reserve this register for linear scan register allocation, now it wont be used by QEMU
-    tcg_regset_set_reg(s->reserved_regs, reg_one);
+    // mark all regs as taken, by setting all bits to 1
+    s->linear_scan_regs = (uint32_t)(-1);
+
+    int i =0;
+    for (i = 0; i < max_regs; i++) {
+        // build a pool of free registers
+        // by asking qemu to find a free register
+        TCGReg reg_one = tcg_reg_alloc(s, tcg_target_available_regs[TCG_TYPE_REG], s->reserved_regs, 0);
+        // and reserve this register for linear scan register allocation, now it wont be used by QEMU
+        tcg_regset_set_reg(s->reserved_regs, reg_one);
+        tcg_regset_set_reg(s->linear_scan_regs, reg_one);
+    }
+
+
+
+    // clear active list
+    memset(s->active, NULL, (sizeof(TCGTemp *) * max_regs));
+    s->active_len = 0;
+    // start the algo
+    for (i=0; i < s->live_intervals_len; i++) {
+        ga_expire_old_intervals(s, i);
+        if (active_len == max_regs) {
+           spill_at_interval(s, i);
+        } else {
+            TCGTemp *ts = s->live_intervals[i];
+            s->active_len = ga_add_to_active(s->active, s->active_len, ts);
+            //temp_load(s, ts, tcg_target_available_regs[ts->type], s->reserved_regs);
+        }
+    }
+    s->live_intervals[0]->linear_scan = 1;  // tell liveness not to worry about this
+    // either we choose r3 at index 0 OR we choose pc at index 7
 
     // indicate that these vars are under linear scan algorithm for spills/loads
     s->live_intervals[0]->linear_scan = 1;
-    s->live_intervals[3]->linear_scan = 1;
-
     s->live_intervals[0]->reg = reg_one;
+
+    // note that on end of basic block variable at live_intervals[0] (which is r3) should be in reg
+    TCGOp *bb_end_op = s->live_intervals[0]->live_range_start->bb->end;
+    bb_end_op->ga_assumed_reg_state[bb_end_op->ga_assumed_reg_state_len++] = &s->live_intervals[0];
+
+    s->live_intervals[3]->linear_scan = 1;
     s->live_intervals[3]->reg = reg_one;
+    // note that on end of basic block variable at live_intervals[3] (which is r1) should be in reg
+    TCGOp *bb_end_op = s->live_intervals[0]->live_range_start->bb->end;
+    bb_end_op->ga_assumed_reg_state[bb_end_op->ga_assumed_reg_state_len++] = &s->live_intervals[0];
 
     // s->live_intervals[0]->ga_can_overtake_reg = 1;
     // s->live_intervals[3]->ga_can_overtake_reg = 1;
-     */
     // op->ga_assumed_reg_state_len = 0;
 
     // memmove(op->ga_assumed_reg_state, s->ga_reg_to_temp, sizeof(TCGTemp*) * s->ga_reg_to_temp_len);
