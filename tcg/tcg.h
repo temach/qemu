@@ -638,6 +638,11 @@ typedef struct TCGTempSet {
 #define SYNC_ARG  1
 typedef uint16_t TCGLifeData;
 
+typedef struct TCGBasicBlock {
+    TCGOp *start;
+    TCGOp *end;
+} TCGBasicBlock;
+
 /* The layout here is designed to avoid crossing of a 32-bit boundary.
    If we do so, gcc adds padding, expanding the size to 12.  */
 typedef struct TCGOp {
@@ -658,28 +663,22 @@ typedef struct TCGOp {
     unsigned life   : 16;       /* 64 */
 
     /* all ops that might lead to this op */
-    TCGOp *parents;
+    TCGOp *parents[10];
     int parents_len;
     /* all ops where we might get from here */
-    TCGOp *children;
+    TCGOp *children[2];
     int children_len;
     /* what temp values are expected to be in the regs officially, according to global reg alloc */
-    TCGTemp *ga_temps_in_reg[TCG_TARGET_NB_REGS];
+    TCGTemp *ga_assumed_reg_state[TCG_TARGET_NB_REGS];
+    int ga_assumed_reg_state_len;
+
+    TCGBasicBlock *bb;
 } TCGOp;
 
 /* Make sure operands fit in the bitfields above.  */
 QEMU_BUILD_BUG_ON(NB_OPS > (1 << 8));
 QEMU_BUILD_BUG_ON(OPC_BUF_SIZE > (1 << 10));
 QEMU_BUILD_BUG_ON(OPPARAM_BUF_SIZE > (1 << 14));
-
-/* Make sure that we don't overflow 64 bits without noticing.  */
-QEMU_BUILD_BUG_ON(sizeof(TCGOp) > 8);
-
-struct TCGTempLiveRange {
-    TCGTemp* temp;
-    TCGOp* start;
-    TCGOp* end;
-};
 
 struct TCGContext {
     uint8_t *pool_cur, *pool_end;
@@ -772,9 +771,10 @@ struct TCGContext {
     /* tells which temp the reg is suposed to hold now according
      * to global register allocation algorithm */
     TCGTemp *ga_reg_to_temp[TCG_TARGET_NB_REGS];
+    int ga_reg_to_temp_len;
 
-    TCGBasicBlock cfg[50];
-    int cfg_len;
+    TCGBasicBlock bb[40];
+    int bb_len;
 
     /* Tells which temporary holds a given register.
        It does not take into account fixed registers */
@@ -951,20 +951,6 @@ typedef struct TCGOpDef {
     int used;
 #endif
 } TCGOpDef;
-
-typedef struct TCGBasicBlock {
-    TCGOp *start_op;
-    TCGOp *end_op;
-
-    // temp has:
-    // TEMP_VAL_REG in parent and TEMP_VAL_MEM in child
-    TCGTemp *in_reg[TCG_TARGET_NB_REGS];
-    // TEMP_VAL_MEM in parent and TEMP_VAL_REG in child
-    TCGTemp *in_mem[20];
-
-    TCGBasicBlock *parents[10];
-    TCGBasicBlock *children[2];
-} TCGBasicBlock;
 
 extern TCGOpDef tcg_op_defs[];
 extern const size_t tcg_op_defs_max;

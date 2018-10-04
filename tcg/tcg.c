@@ -1302,6 +1302,8 @@ void tcg_dump_ops(TCGContext *s)
                 col += qemu_log(" " TARGET_FMT_lx, a);
             }
         } else if (c == INDEX_op_call) {
+            col += qemu_log("% 3d ", oi);
+
             /* variable number of arguments */
             nb_oargs = op->callo;
             nb_iargs = op->calli;
@@ -1324,6 +1326,7 @@ void tcg_dump_ops(TCGContext *s)
                 col += qemu_log(",%s", t);
             }
         } else {
+            col += qemu_log("% 3d ", oi);
             col += qemu_log(" %s ", def->name);
 
             nb_oargs = def->nb_oargs;
@@ -1522,6 +1525,17 @@ void tcg_dump_ops(TCGContext *s)
                 }
             }
         }
+        if (op->bb->start == op) {
+            qemu_log("          bb_start");
+        }
+        if (op->bb->end == op) {
+            qemu_log("          bb_end_to: ");
+            for (i=0; i < op->children_len; i++) {
+                qemu_log("% 3d", s->gen_op_buf[op->children[i]->prev].next);
+            }
+        }
+
+
         qemu_log("\n");
 
         if (def->flags & TCG_OPF_BB_END) {
@@ -1758,6 +1772,7 @@ static inline void tcg_la_bb_end(TCGContext *s, uint8_t *temp_state)
 }
 
 
+/*
 static int ga_insert_by_increasing_end(TCGTemp **array, int array_len, TCGTemp *new_live_range) {
     int i=0;
     TCGTemp *temp = NULL;
@@ -1790,44 +1805,8 @@ static int ga_insert_by_increasing_end(TCGTemp **array, int array_len, TCGTemp *
 
     return array_len+1;
 }
+*/
 
-// after computing live ranges we want to get sorted array of live ranges
-// we create another variable in TCGContext called live_intervals which will be ordered.
-// since we dont always use all global vars in TB, we store length in live_intervals_len
-// The code is from https://stackoverflow.com/questions/35376769/sorting-one-array-into-another-c
-static void ga_make_sorted_live_ranges(TCGContext *s) {
-    // copy only pointers that have valid start of interval value
-    int i;
-    s->live_intervals_len = 0;
-    for (i=0; i < s->nb_globals; i++) {
-        // if the global temp is used in the translation block it will have
-        // live_range_start assigned, take only temps with valid live_range_start
-        if (s->temps[i].live_range_start != NULL) {
-            s->live_intervals[s->live_intervals_len++] = &s->temps[i];
-            tcg_debug_assert(s->temps[i].live_range_end != NULL);
-        }
-    }
-
-    // and sort them
-    TCGTemp **a = &s->live_intervals[0];
-    TCGTemp *t = NULL;
-    int swapped = 1;
-    int j = s->live_intervals_len;
-    swapped = 1;
-    while (swapped) {
-        swapped = 0;
-        for (i = 1; i < j; i++) {
-            if (a[i-1]->live_range_start > a[i]->live_range_start) {
-                // swap if left is 0 OR left is less than right
-                t = a[i];
-                a[i] = a[i - 1];
-                a[i - 1] = t;
-                swapped = 1;
-            }
-        }
-        j--;
-    }
-}
 
 // after computing live ranges
 static void ga_linear_scan(TCGContext *s) {
@@ -1851,6 +1830,7 @@ static void ga_linear_scan(TCGContext *s) {
 //  s->live_intervals[0]->linear_scan = 1;  // tell liveness not to worry about this
     // either we choose r3 at index 0 OR we choose pc at index 7
 
+    /*
     // ask qemu to find a free register
     TCGReg reg_one = tcg_reg_alloc(s, tcg_target_available_regs[TCG_TYPE_REG], s->reserved_regs, 0);
     // and reserve this register for linear scan register allocation, now it wont be used by QEMU
@@ -1865,33 +1845,29 @@ static void ga_linear_scan(TCGContext *s) {
 
     // s->live_intervals[0]->ga_can_overtake_reg = 1;
     // s->live_intervals[3]->ga_can_overtake_reg = 1;
+     */
+    // op->ga_assumed_reg_state_len = 0;
+
+    // memmove(op->ga_assumed_reg_state, s->ga_reg_to_temp, sizeof(TCGTemp*) * s->ga_reg_to_temp_len);
+    // op->ga_assumed_reg_state_len = s->ga_reg_to_temp_len;
     return;
 }
 
-static TCGOp* ga_find_label(int label_id) {
-    unsigned int oi, oi_next;
+static TCGOp* ga_find_set_label_op_by_id(TCGContext *s, int label_id) {
+    int oi, oi_next;
 
     for (oi = s->gen_op_buf[0].next; oi != 0; oi = oi_next) {
-        int i, k, nb_oargs, nb_iargs;
-        TCGTemp *t;
-
         // the instruction type and index of the arguments
         TCGOp *op = &s->gen_op_buf[oi];
         // instruction type explicitly
         TCGOpcode opc = op->opc;
-        // describes the instruction and its arguments specification
-        const TCGOpDef *def = &tcg_op_defs[opc];
         // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
         const TCGArg *args = &s->gen_opparam_buf[op->args];
-        // get the liveness information for the outputs/inputs to this op
-        // TCGLifeData arg_life = op->life;
 
         oi_next = op->next;
 
-        if (opc === INDEX_op_set_label && arg_label(args[0])->id == label_id) {
+        if (opc == INDEX_op_set_label && arg_label(args[0])->id == label_id) {
             return op;
-        } else {
-            continue;
         }
     }
     // we should never reach here
@@ -1899,86 +1875,124 @@ static TCGOp* ga_find_label(int label_id) {
     return NULL;
 }
 
-static void ga_build_cfg(TCGContext *s) {
+
+static void ga_build_basic_blocks(TCGContext *s) {
     int oi, oi_next;
+    TCGBasicBlock *bb = NULL;
+
+    s->bb_len = 0;
 
     for (oi = s->gen_op_buf[0].next; oi != 0; oi = oi_next) {
-        int i, k, nb_oargs, nb_iargs;
-        TCGTemp *t;
-
         // the instruction type and index of the arguments
         TCGOp *op = &s->gen_op_buf[oi];
         // instruction type explicitly
         TCGOpcode opc = op->opc;
-        // describes the instruction and its arguments specification
-        const TCGOpDef *def = &tcg_op_defs[opc];
-        // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
-        const TCGArg *args = &s->gen_opparam_buf[op->args];
-        // get the liveness information for the outputs/inputs to this op
-        // TCGLifeData arg_life = op->life;
+
+        // zero fields to build control-flow-graph later
+        op->parents_len = 0;
+        op->children_len = 0;
+        op->ga_assumed_reg_state_len = 0;
 
         oi_next = op->next;
 
-        if (! def->flags & TCG_OPF_BB_END) {
-            // the op is nothing interesting
-            op->ga_temps_in_reg = NULL;
-            op->parents = NULL;
-            op->parents_len = 0;
-            op->children = NULL;
-            op->children_len = 0;
-            continue;
+        // consider questions:
+        // what if set label immediately after brcond
+        // what if brcond immediately after brcond
+        // what if set label is last in op_buf
+        // what if brcond is first ever
+
+        // if set_label OR call OR block is first ever OR block ended need new one
+        if (opc == INDEX_op_set_label || opc == INDEX_op_call || bb == NULL || bb->end != NULL)  {
+            if (opc == INDEX_op_set_label || opc == INDEX_op_call) {
+                // if its start of new block make sure prev block ended before now
+                tcg_debug_assert(bb->end != NULL);
+            }
+            // start new bb
+            bb = &s->bb[s->bb_len++];
+            bb->start = op;
+            bb->end = NULL;
         }
 
-        switch (opc) {
-        case INDEX_op_call:
-            // for simplicity we must regard call as a basic block so even though it
-            // does not have TCG_OPF_BB_END we must before the call sync and free regs
-            // and then resolve any broken assumptions
-            break;
-        case INDEX_op_set_label:
-            // block ends at jump instruction or before label instruction
-            cur_bb->end_op = op;
-            cur_bb++;
+        // assign op to current block
+        op->bb = bb;
 
-            // this is slightly different because  it marks the start of a block
-            cur_bb->start_op = op;
-            cur_bb->j
-            break;
+        if ( (opc == INDEX_op_br)
+            || (opc == INDEX_op_brcond_i32)
+            || (opc == INDEX_op_brcond2_i32)
+            || (opc == INDEX_op_brcond_i64)
+            || (opc == INDEX_op_call)
+            || (opc == INDEX_op_goto_tb)
+            || (opc == INDEX_op_goto_ptr)
+            || (opc == INDEX_op_exit_tb)
+            || (s->gen_op_buf[op->next].opc == INDEX_op_set_label)
+            || (s->gen_op_buf[op->next].opc == INDEX_op_call)
+            || (op->next == 0)
+        ) {
+            // end last bb
+            bb->end = op;
+        }
+    }
+}
+
+
+static void ga_build_cfg(TCGContext *s) {
+    int i;
+    TCGBasicBlock *bb;
+
+    // iterate over the ops where basic blocks end
+    for (i = 0; i < s->bb_len; i++) {
+        bb = &s->bb[i];
+        TCGOp *bb_end_op = bb->end;
+        // the first argument to the instruction (ordered oargs, iargs, cargs for their quantities see def)
+        const TCGArg *args = &s->gen_opparam_buf[bb_end_op->args];
+
+        // to better understand the goto_tb and exit_tb mechanisms
+        // grep for "goto" in http://gsoc.cat-v.org/people/nwf/paper-strategy-plus.pdf
+        // all cases except op_call have TCG_OPF_BB_END flag set in def
+        switch (bb_end_op->opc) {
         case INDEX_op_br:
         case INDEX_op_brcond_i32:
         case INDEX_op_brcond2_i32:
-        case INDEX_op_brcond_i64:
-            op->children[op->children_len++] = op->next;
-            // brcond has the target lable as argument index 3
-            op->children[op->children_len++] = ga_find_set_label_op_by_id(s, arg_label(args[3])->id);
+        case INDEX_op_brcond_i64: {
+                // one child is the immediately next instruction
+                TCGOp *child_1 = &s->gen_op_buf[bb_end_op->next];
+                child_1->parents[child_1->parents_len++] = bb_end_op;
+                bb_end_op->children[bb_end_op->children_len++] = child_1;
 
+                // another child is the target label
+                // brcond has the target lable at argument index 3
+                TCGOp *child_2 = ga_find_set_label_op_by_id(s, arg_label(args[3])->id);
+                child_2->parents[child_2->parents_len++] = bb_end_op;
+                bb_end_op->children[bb_end_op->children_len++] = child_2;
+                break;
+            }
 
-
-
-            break;
         case INDEX_op_exit_tb:
+            // instruction is basic block end, it has no children
+            break;
+
+        case INDEX_op_set_label:
+            // should never happen, (unless set_label is last opcode in s->gen_op_buf or multiple set_label ??
+            tcg_debug_assert(false);
+            break;
+
         case INDEX_op_goto_tb:
         case INDEX_op_goto_ptr:
-            // these operations have the TCG_OPF_BB_END flag set
-            // they mark basic block start and end, must use them
-            // to resolve allocator assumptions
-            //
-            // to better understand the goto_tb and exit_tb mechanisms
-            // grep for "goto" in http://gsoc.cat-v.org/people/nwf/paper-strategy-plus.pdf
-
-            // block ends at jump instruction or before label instruction
-            cur_bb->end_op = op;
-            cur_bb++;
-
-
-            break;
-        default:
-            // Sanity check that we've not introduced any unhandled opcodes.
-            tcg_debug_assert(tcg_op_supported(opc));
-            break;
+        case INDEX_op_call:
+            // if goto end basic block either we go to another TB or to next instruction
+            // if call ends basic block, then next basic block is directly after. Consider call a basic block for simplicity
+            // fallthrough to default case
+        default: {
+                // Sanity check that we've not introduced any unhandled opcodes.
+                tcg_debug_assert(tcg_op_supported(bb_end_op->opc));
+                // if you are an ordinary fall-through instruction at end of basic block
+                TCGOp *child = &s->gen_op_buf[bb_end_op->next];
+                child->parents[child->parents_len++] = bb_end_op;
+                bb_end_op->children[bb_end_op->children_len++] = child;
+                break;
+            }
         }
     }
-
 }
 
 static void ga_resolve_assumptions(TCGContext *s) {
@@ -2042,6 +2056,44 @@ static void ga_resolve_assumptions(TCGContext *s) {
     */
 }
 
+// after computing live ranges we want to get sorted array of live ranges
+// we create another variable in TCGContext called live_intervals which will be ordered.
+// since we dont always use all global vars in TB, we store length in live_intervals_len
+// The code is from https://stackoverflow.com/questions/35376769/sorting-one-array-into-another-c
+static void ga_filter_sort_live_ranges(TCGContext *s) {
+    // copy only pointers that have valid start of interval value
+    int i;
+    s->live_intervals_len = 0;
+    for (i=0; i < s->nb_globals; i++) {
+        // if the global temp is used in the translation block it will have
+        // live_range_start assigned, take only temps with valid live_range_start
+        if (s->temps[i].live_range_start != NULL) {
+            s->live_intervals[s->live_intervals_len++] = &s->temps[i];
+            tcg_debug_assert(s->temps[i].live_range_end != NULL);
+        }
+    }
+
+    // and sort them
+    TCGTemp **a = &s->live_intervals[0];
+    TCGTemp *t = NULL;
+    int swapped = 1;
+    int j = s->live_intervals_len;
+    swapped = 1;
+    while (swapped) {
+        swapped = 0;
+        for (i = 1; i < j; i++) {
+            if (a[i-1]->live_range_start > a[i]->live_range_start) {
+                // swap if left is 0 OR left is less than right
+                t = a[i];
+                a[i] = a[i - 1];
+                a[i - 1] = t;
+                swapped = 1;
+            }
+        }
+        j--;
+    }
+}
+
 // run this after liveness analysis
 // we use liveness results and our own analysis to determine when to
 // emit tcg_out_st (to write temp to mem) or tcg_out_ld (to load temp
@@ -2049,6 +2101,13 @@ static void ga_resolve_assumptions(TCGContext *s) {
 static void ga_compute_live_ranges(TCGContext *s)
 {
     int oi, oi_prev;
+    int i;
+
+    for (i=0; i < s->nb_globals; i++) {
+        // set all start/end ranges to NULL
+        s->temps[i].live_range_start = NULL;
+        s->temps[i].live_range_end = NULL;
+    }
 
     // notice we start with opcode 0 and take his "prev" this
     // way we get not the start opcode but the end opcode
@@ -2072,17 +2131,7 @@ static void ga_compute_live_ranges(TCGContext *s)
 
         switch (opc) {
         case INDEX_op_insn_start:
-            // in debug output this op is shown as "---- 000100123 012012" address
-            // we can ignore it as its not related to basic blocks and branching
-            break;
-        case INDEX_op_call:
-            // for simplicity we must regard call as a basic block so even though it
-            // does not have TCG_OPF_BB_END we must before the call sync and free regs
-            // and then resolve any broken assumptions
-            break;
         case INDEX_op_set_label:
-            // this is slightly different because  it marks the start of a block
-            break;
         case INDEX_op_br:
         case INDEX_op_brcond_i32:
         case INDEX_op_brcond2_i32:
@@ -2090,12 +2139,10 @@ static void ga_compute_live_ranges(TCGContext *s)
         case INDEX_op_exit_tb:
         case INDEX_op_goto_tb:
         case INDEX_op_goto_ptr:
-            // these operations have the TCG_OPF_BB_END flag set
-            // they mark basic block start and end, must use them
-            // to resolve allocator assumptions
-            //
-            // to better understand the goto_tb and exit_tb mechanisms
-            // grep for "goto" in http://gsoc.cat-v.org/people/nwf/paper-strategy-plus.pdf
+            // ignore the arguments to these ops
+            break;
+        case INDEX_op_call:
+            // ignore arguments to call
             break;
         default:
             /* Sanity check that we've not introduced any unhandled opcodes. */
@@ -2118,10 +2165,6 @@ static void ga_compute_live_ranges(TCGContext *s)
                     /* do not consider temps that dont survive basic blocks, just always load and store them */
                     continue;
                 }
-                // it seems wrong to state that live_range starts when the arg appears as an output
-                // in fact when arg is used as output we mark it DEAD not live according to Dragon Compiler Book
-                //
-                // if start is not set or start is earlier than current, make current the start
                 // ok to compare op to t->live_range_start since they point to the same gen_op_buf array
                 if (t->live_range_start == NULL || op < t->live_range_start) {
                      t->live_range_start = op;
@@ -2143,22 +2186,13 @@ static void ga_compute_live_ranges(TCGContext *s)
                     /* do not consider temps that dont survive basic blocks, just always load and store them */
                     continue;
                 }
+                // ok to compare op to t->live_range_start since they point to the same gen_op_buf array
                 if (t->live_range_start == NULL || op < t->live_range_start) {
                      t->live_range_start = op;
                 }
                 if (t->live_range_end == NULL || op > t->live_range_end) {
                      t->live_range_end = op;
                 }
-//                if (IS_DEAD_ARG(k) && t->live_range_end == NULL) {
-//                    // we found death of temp and this is the first death we found, then current op is
-//                    // last use of temp as we are looking at instructions from back to front
-//                    t->live_range_end = op;
-//                }
-//                // if start is not set or start is earlier than current, make current the start
-//                // ok to compare op to t->live_range_start since they point to the same gen_op_buf array
-//                if (t->live_range_start == NULL || op < t->live_range_start) {
-//                    t->live_range_start = op;
-//                }
             }
             break;
         }
@@ -3368,7 +3402,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         }
 
         ga_compute_live_ranges(s);
-        ga_make_sorted_live_ranges(s);
+        ga_filter_sort_live_ranges(s);
+        ga_build_basic_blocks(s);
+        ga_build_cfg(s);
         ga_linear_scan(s);
         ga_resolve_assumptions(s);
     }
